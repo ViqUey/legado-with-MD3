@@ -49,4 +49,30 @@ class ChineseLineBreakerTest {
         assertArrayEquals(intArrayOf(0, 3, 6), result.lineStarts)
         assertArrayEquals(floatArrayOf(30f, 18f), result.lineWidthsPx, 0f)
     }
+
+    @Test
+    fun latinWordMovesIntactToNextLine() {
+        val result = breakText("one two".map(Char::toString), 55)
+
+        assertEquals(2, result.lineCount)
+        assertArrayEquals(intArrayOf(0, 4, 7), result.lineStarts)
+        assertArrayEquals(floatArrayOf(40f, 30f), result.lineWidthsPx, 0f)
+    }
+
+    @Test
+    fun overlongLatinWordFallsBackToCharacterBreaks() {
+        val result = breakText("abcdef".map(Char::toString), 25)
+
+        assertEquals(3, result.lineCount)
+        assertArrayEquals(intArrayOf(0, 2, 4, 6), result.lineStarts)
+        assertArrayEquals(floatArrayOf(20f, 20f, 20f), result.lineWidthsPx, 0f)
+    }
+
+    @Test
+    fun latinHandlingDoesNotChangeCjkBreaks() {
+        val result = breakText("中文测试".map(Char::toString), 25)
+
+        assertEquals(2, result.lineCount)
+        assertArrayEquals(intArrayOf(0, 2, 4), result.lineStarts)
+    }
 }

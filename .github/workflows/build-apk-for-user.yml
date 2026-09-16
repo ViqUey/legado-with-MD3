@@ -1,15 +1,18 @@
 name: Build APK for User
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       branch:
         description: '要构建的分支'
         required: true
-        default: 'trae/solo-agent-vhkVM3'
+        default: 'main'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,7 +21,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up JDK 21
@@ -39,10 +42,10 @@ jobs:
         run: |
           sed -i '/maven.aliyun.com/d' settings.gradle
 
-      - name: Build Debug APK
+      - name: Test reader line breaking and build Debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleAppDebug -PenableAbiSplits=false --no-daemon --no-configuration-cache
+          ./gradlew testAppDebugUnitTest assembleAppDebug -PenableAbiSplits=false --no-daemon --no-configuration-cache
         env:
           COMMIT_NUMBER: ${{ github.run_number }}
           APP_VERSION_NAME: debug-${{ github.run_number }}

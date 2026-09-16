@@ -40,6 +40,28 @@ class ChineseLineBreaker(
             var hungLine = false
             val currentWidthLimit = if (widths.isEmpty()) firstWidthLimit else widthLimit
             if (lineWidth > currentWidthLimit) {
+                val lineStart = clusterStarts.last()
+                val latinWordStart = latinWordStartBefore(index)
+                if (latinWordStart > lineStart) {
+                    val carriedRange = latinWordStart..index
+                    carriedWidth = carriedRange.sumOf { widthsPx[it].toDouble() }.toFloat()
+                    carriedCharacters = carriedRange.sumOf { clusters[it].length }
+                    carriedClusters = carriedRange.count()
+                    addStart(
+                        character = textLength - carriedCharacters + cluster.length,
+                        cluster = latinWordStart,
+                    )
+                    widths += lineWidth - carriedWidth
+                    lineWidth = carriedWidth
+                    if (index == clusters.lastIndex) {
+                        starts += starts.last() + carriedCharacters
+                        clusterStarts += clusterStarts.last() + carriedClusters
+                        widths += lineWidth
+                    }
+                    textLength += cluster.length
+                    previousWidth = currentWidth
+                    return@forEachIndexed
+                }
                 // 旧 ZhLayout 把行尾标点的处置分成两类：可压缩的窄标点回退到更早的合法边界
                 // （BREAK_MORE_CHAR），全角标点则直接悬挂在本行右边界之外（CPS_1/2/3：
                 // `offset = 0f`，行宽允许超过 width）。下面三个判定与旧版逐条对应。
@@ -147,6 +169,44 @@ class ChineseLineBreaker(
     private fun addStart(character: Int, cluster: Int) {
         starts += character
         clusterStarts += cluster
+    }
+
+    /**
+     * Returns the start of the Latin word containing [index], or [index] when the overflow
+     * is not inside one. A word that already starts on this visual line is deliberately not
+     * rewound by the caller, so an overlong word still falls back to character-level breaks.
+     */
+    private fun latinWordStartBefore(index: Int): Int {
+        if (index == 0 || !clusters[index].isLatinWordPart() ||
+            !clusters[index - 1].isLatinWordPart()
+        ) return index
+        var start = index - 1
+        while (start > 0 && clusters[start - 1].isLatinWordPart()) start--
+        return start
+    }
+
+    private fun String.isLatinWordPart(): Boolean {
+        var hasLatinLetter = false
+        var offset = 0
+        while (offset < length) {
+            val codePoint = codePointAt(offset)
+            val type = Character.getType(codePoint)
+            when {
+                Character.isLetter(codePoint) -> {
+                    if (Character.UnicodeScript.of(codePoint) != Character.UnicodeScript.LATIN) {
+                        return false
+                    }
+                    hasLatinLetter = true
+                }
+                Character.isDigit(codePoint) ||
+                    type == Character.NON_SPACING_MARK.toInt() ||
+                    type == Character.COMBINING_SPACING_MARK.toInt() ||
+                    codePoint == '\''.code || codePoint == 0x2019 -> Unit
+                else -> return false
+            }
+            offset += Character.charCount(codePoint)
+        }
+        return hasLatinLetter || all { it.isDigit() || it == '\'' || it == '\u2019' }
     }
 
     private enum class Mode { NORMAL, PULL_PREVIOUS, REWIND, HANG }
