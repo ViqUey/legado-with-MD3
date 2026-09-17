@@ -69,10 +69,11 @@ class ChineseLineBreakerTest {
     }
 
     @Test
-    fun latinHandlingDoesNotChangeCjkBreaks() {
-        val result = breakText("中文测试".map(Char::toString), 25)
+    fun latinHandlingDoesNotInterceptCjkPunctuation() {
+        val result = breakText(listOf("我", "是", "，", "三"), 25)
 
-        assertEquals(2, result.lineCount)
-        assertArrayEquals(intArrayOf(0, 2, 4), result.lineStarts)
+        assertEquals(3, result.lineCount)
+        assertArrayEquals(intArrayOf(0, 1, 3, 4), result.lineStarts)
+        assertArrayEquals(floatArrayOf(10f, 20f, 10f), result.lineWidthsPx, 0f)
     }
 }

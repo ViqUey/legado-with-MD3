@@ -42,7 +42,7 @@ class ChineseLineBreaker(
             if (lineWidth > currentWidthLimit) {
                 val lineStart = clusterStarts.last()
                 val latinWordStart = latinWordStartBefore(index)
-                if (latinWordStart > lineStart) {
+                if (latinWordStart != null && latinWordStart > lineStart) {
                     val carriedRange = latinWordStart..index
                     carriedWidth = carriedRange.sumOf { widthsPx[it].toDouble() }.toFloat()
                     carriedCharacters = carriedRange.sumOf { clusters[it].length }
@@ -172,14 +172,16 @@ class ChineseLineBreaker(
     }
 
     /**
-     * Returns the start of the Latin word containing [index], or [index] when the overflow
+     * Returns the start of the Latin word containing [index], or null when the overflow
      * is not inside one. A word that already starts on this visual line is deliberately not
      * rewound by the caller, so an overlong word still falls back to character-level breaks.
      */
-    private fun latinWordStartBefore(index: Int): Int {
-        if (index == 0 || !clusters[index].isLatinWordPart() ||
+    private fun latinWordStartBefore(index: Int): Int? {
+        if (index == 0 ||
+            !clusters[index].isLatinWordPart() ||
             !clusters[index - 1].isLatinWordPart()
-        ) return index
+        ) return null
+
         var start = index - 1
         while (start > 0 && clusters[start - 1].isLatinWordPart()) start--
         return start
