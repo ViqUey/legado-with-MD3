@@ -43,10 +43,10 @@ jobs:
             --tests 'io.legado.app.feature.reader.core.ReaderPaginatorTest.keepsClosingPunctuationOffNextLineWhenPossible' \
             --no-daemon --no-configuration-cache
 
-      - name: Test revised Latin fix 031a4eeec
+      - name: Test punctuation regression fd719cd66
         if: always()
         run: |
-          git checkout 031a4eeec
+          git checkout fd719cd66
           echo "" > app/src/main/assets/18PlusList.txt
           sed -i '/maven.aliyun.com/d' settings.gradle
           ./gradlew testAppDebugUnitTest \
