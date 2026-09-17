@@ -1,6 +1,9 @@
 name: Compare Reader CJK Tests
 
 on:
+  push:
+    branches:
+      - test/cjk-baseline-comparison
   workflow_dispatch:
 
 permissions:
