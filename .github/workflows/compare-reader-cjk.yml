@@ -1,0 +1,52 @@
+name: Compare Reader CJK Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare CI environment
+        run: |
+          chmod +x gradlew
+          echo "" > app/src/main/assets/18PlusList.txt
+          sed -i '/maven.aliyun.com/d' settings.gradle
+
+      - name: Test baseline d84591242
+        run: |
+          git checkout d84591242
+          echo "" > app/src/main/assets/18PlusList.txt
+          sed -i '/maven.aliyun.com/d' settings.gradle
+          ./gradlew testAppDebugUnitTest \
+            --tests 'io.legado.app.feature.reader.core.layout.ChineseLineBreakerTest' \
+            --tests 'io.legado.app.feature.reader.core.ReaderPaginatorTest.keepsClosingPunctuationOffNextLineWhenPossible' \
+            --no-daemon --no-configuration-cache
+
+      - name: Test Latin fix 7fa9f6cdc
+        if: always()
+        run: |
+          git checkout 7fa9f6cdc
+          echo "" > app/src/main/assets/18PlusList.txt
+          sed -i '/maven.aliyun.com/d' settings.gradle
+          ./gradlew testAppDebugUnitTest \
+            --tests 'io.legado.app.feature.reader.core.layout.ChineseLineBreakerTest' \
+            --tests 'io.legado.app.feature.reader.core.ReaderPaginatorTest.keepsClosingPunctuationOffNextLineWhenPossible' \
+            --no-daemon --no-configuration-cache
