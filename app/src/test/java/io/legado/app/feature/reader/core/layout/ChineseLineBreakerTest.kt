@@ -76,4 +76,28 @@ class ChineseLineBreakerTest {
         assertArrayEquals(intArrayOf(0, 1, 3, 4), result.lineStarts)
         assertArrayEquals(floatArrayOf(10f, 20f, 10f), result.lineWidthsPx, 0f)
     }
+
+    @Test
+    fun latinWordBeforeCjkPeriodStaysIntact() {
+        val result = breakText("aa words。".map(Char::toString), 80)
+
+        assertArrayEquals(intArrayOf(0, 3, 9), result.lineStarts)
+        assertArrayEquals(floatArrayOf(30f, 60f), result.lineWidthsPx, 0f)
+    }
+
+    @Test
+    fun latinWordBeforeCjkCommaStaysIntact() {
+        val result = breakText("aa layout、".map(Char::toString), 90)
+
+        assertArrayEquals(intArrayOf(0, 3, 10), result.lineStarts)
+        assertArrayEquals(floatArrayOf(30f, 70f), result.lineWidthsPx, 0f)
+    }
+
+    @Test
+    fun latinWordBeforeAsciiPeriodStaysIntact() {
+        val result = breakText("aa lines.".map(Char::toString), 80)
+
+        assertArrayEquals(intArrayOf(0, 3, 9), result.lineStarts)
+        assertArrayEquals(floatArrayOf(30f, 60f), result.lineWidthsPx, 0f)
+    }
 }
