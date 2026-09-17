@@ -29,7 +29,6 @@ class ChineseLineBreaker(
     private fun breakLines() {
         if (clusters.isEmpty()) return
         var lineWidth = 0f
-        var previousWidth = 0f
         var textLength = 0
         clusters.forEachIndexed { index, cluster ->
             val currentWidth = widthsPx[index]
@@ -41,26 +40,16 @@ class ChineseLineBreaker(
             val currentWidthLimit = if (widths.isEmpty()) firstWidthLimit else widthLimit
             if (lineWidth > currentWidthLimit) {
                 val lineStart = clusterStarts.last()
-                val latinWordStart = latinWordStartBefore(index)
-                if (latinWordStart != null && latinWordStart > lineStart) {
-                    val carriedRange = latinWordStart..index
+                fun carryFrom(candidate: Int) {
+                    val start = safeBreakStart(candidate, lineStart)
+                    val carriedRange = start..index
                     carriedWidth = carriedRange.sumOf { widthsPx[it].toDouble() }.toFloat()
                     carriedCharacters = carriedRange.sumOf { clusters[it].length }
                     carriedClusters = carriedRange.count()
                     addStart(
                         character = textLength - carriedCharacters + cluster.length,
-                        cluster = latinWordStart,
+                        cluster = start,
                     )
-                    widths += lineWidth - carriedWidth
-                    lineWidth = carriedWidth
-                    if (index == clusters.lastIndex) {
-                        starts += starts.last() + carriedCharacters
-                        clusterStarts += clusterStarts.last() + carriedClusters
-                        widths += lineWidth
-                    }
-                    textLength += cluster.length
-                    previousWidth = currentWidth
-                    return@forEachIndexed
                 }
                 // 旧 ZhLayout 把行尾标点的处置分成两类：可压缩的窄标点回退到更早的合法边界
                 // （BREAK_MORE_CHAR），全角标点则直接悬挂在本行右边界之外（CPS_1/2/3：
@@ -94,19 +83,14 @@ class ChineseLineBreaker(
                     else -> Mode.NORMAL
                 }
                 var rewindClusters = 0
-                var rewindCharacters = 0
                 // 可压缩标点会把收尾标点留到下一行行首，必须回退到更早的非标点边界
                 val needsRecheck = mode == Mode.PULL_PREVIOUS && (previousClosing || nextClosing)
                 if (needsRecheck && index > 2) {
                     val lineStart = if (widths.isEmpty()) indentCharacters else clusterStarts.last()
                     mode = Mode.NORMAL
                     for (candidate in index downTo lineStart + 1) {
-                        if (candidate == index) {
-                            previousWidth = 0f
-                        } else {
+                        if (candidate != index) {
                             rewindClusters++
-                            rewindCharacters += clusters[candidate].length
-                            previousWidth += widthsPx[candidate]
                         }
                         if (clusters[candidate] !in closing && clusters[candidate - 1] !in opening) {
                             mode = Mode.REWIND
@@ -115,18 +99,8 @@ class ChineseLineBreaker(
                     }
                 }
                 when (mode) {
-                    Mode.NORMAL -> {
-                        carriedWidth = currentWidth
-                        addStart(textLength, index)
-                        carriedCharacters = cluster.length
-                        carriedClusters = 1
-                    }
-                    Mode.PULL_PREVIOUS -> {
-                        carriedWidth = currentWidth + previousWidth
-                        addStart(textLength - clusters[index - 1].length, index - 1)
-                        carriedCharacters = clusters[index - 1].length + cluster.length
-                        carriedClusters = 2
-                    }
+                    Mode.NORMAL -> carryFrom(index)
+                    Mode.PULL_PREVIOUS -> carryFrom(index - 1)
                     Mode.HANG -> {
                         // 标点留在本行（行宽超出右边界，旧版正是靠这个避免标点落到下一行行首），
                         // 下一行从它之后重新开始，本行不向下一行携带任何宽度。
@@ -136,12 +110,7 @@ class ChineseLineBreaker(
                         carriedClusters = 0
                         hungLine = true
                     }
-                    Mode.REWIND -> {
-                        carriedWidth = currentWidth + previousWidth
-                        addStart(textLength - rewindCharacters, index - rewindClusters)
-                        carriedCharacters = rewindCharacters + cluster.length
-                        carriedClusters = rewindClusters + 1
-                    }
+                    Mode.REWIND -> carryFrom(index - rewindClusters)
                 }
                 widths += lineWidth - carriedWidth
                 lineWidth = carriedWidth
@@ -162,13 +131,18 @@ class ChineseLineBreaker(
                 }
             }
             textLength += cluster.length
-            previousWidth = currentWidth
         }
     }
 
     private fun addStart(character: Int, cluster: Int) {
         starts += character
         clusterStarts += cluster
+    }
+
+    /** Keeps a candidate line start from splitting a Latin word that fits on a fresh line. */
+    private fun safeBreakStart(candidate: Int, lineStart: Int): Int {
+        val wordStart = latinWordStartBefore(candidate)
+        return if (wordStart != null && wordStart > lineStart) wordStart else candidate
     }
 
     /**
