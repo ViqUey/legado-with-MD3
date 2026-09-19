@@ -13,6 +13,11 @@ enum class ReaderSelectionEndpoint {
     FOCUS,
 }
 
+data class ReaderSelectionMoveResult(
+    val selection: ReaderSelection,
+    val contractionPreview: ReaderSelection?,
+)
+
 /**
  * 选区可跨的页：对照旧 `ContentTextView.upSelectChars`（`relativePage(0..2)`）——当前页、
  * 下一页、下下页，**不含上一页**；滚动模式的连续堆叠允许选到邻章首页（`nextPlusPage` 语义），
@@ -385,9 +390,32 @@ object ReaderSelectionPolicy {
         locale: Locale = Locale.getDefault(),
         allowChapterCrossing: Boolean = false,
         snapMisses: Boolean = false,
-    ): ReaderSelection {
-        if (!allowChapterCrossing && selection.chapterIndex != page.id.chapterIndex) return selection
-        val context = paragraphHit(page, x, y, snapMisses) ?: return selection
+    ): ReaderSelection = moveEndpointWithPreview(
+        selection,
+        page,
+        x,
+        y,
+        endpoint,
+        locale,
+        allowChapterCrossing,
+        snapMisses,
+    ).selection
+
+    fun moveEndpointWithPreview(
+        selection: ReaderSelection,
+        page: ReaderPage,
+        x: Float,
+        y: Float,
+        endpoint: ReaderSelectionEndpoint,
+        locale: Locale = Locale.getDefault(),
+        allowChapterCrossing: Boolean = false,
+        snapMisses: Boolean = false,
+    ): ReaderSelectionMoveResult {
+        if (!allowChapterCrossing && selection.chapterIndex != page.id.chapterIndex) {
+            return ReaderSelectionMoveResult(selection, null)
+        }
+        val context = paragraphHit(page, x, y, snapMisses)
+            ?: return ReaderSelectionMoveResult(selection, null)
         val range = latinWordRange(context, locale)
         val fixed = when (endpoint) {
             ReaderSelectionEndpoint.ANCHOR -> Triple(
@@ -406,12 +434,72 @@ object ReaderSelectionPolicy {
             hitBeforeFixed -> range.first
             else -> range.last
         }
-        return selection.moveEndpoint(
+        val semantic = selection.moveEndpoint(
             endpoint,
             target.chapterPosition,
             target.emphasized,
             page.id.chapterIndex,
         )
+        val raw = selection.moveEndpoint(
+            endpoint,
+            context.hit.chapterPosition,
+            context.hit.emphasized,
+            page.id.chapterIndex,
+        )
+        val preview = raw.takeIf {
+            range != null &&
+                raw != semantic &&
+                movesTowardFixedEndpoint(
+                    selection,
+                    endpoint,
+                    page.id.chapterIndex,
+                    context.hit.emphasized,
+                    context.hit.chapterPosition,
+                )
+        }
+        return ReaderSelectionMoveResult(semantic, preview)
+    }
+
+    private fun movesTowardFixedEndpoint(
+        selection: ReaderSelection,
+        endpoint: ReaderSelectionEndpoint,
+        rawChapter: Int,
+        rawIsTitle: Boolean,
+        rawPosition: Int,
+    ): Boolean {
+        val moving = when (endpoint) {
+            ReaderSelectionEndpoint.ANCHOR -> Triple(
+                selection.chapterIndex, selection.anchorIsTitle, selection.anchor,
+            )
+            ReaderSelectionEndpoint.FOCUS -> Triple(
+                selection.focusChapterIndex, selection.focusIsTitle, selection.focus,
+            )
+        }
+        val fixed = when (endpoint) {
+            ReaderSelectionEndpoint.ANCHOR -> Triple(
+                selection.focusChapterIndex, selection.focusIsTitle, selection.focus,
+            )
+            ReaderSelectionEndpoint.FOCUS -> Triple(
+                selection.chapterIndex, selection.anchorIsTitle, selection.anchor,
+            )
+        }
+        val movingToFixed = comparePosition(
+            moving.first, moving.second, moving.third,
+            fixed.first, fixed.second, fixed.third,
+        )
+        val rawToMoving = comparePosition(
+            rawChapter, rawIsTitle, rawPosition,
+            moving.first, moving.second, moving.third,
+        )
+        val rawToFixed = comparePosition(
+            rawChapter, rawIsTitle, rawPosition,
+            fixed.first, fixed.second, fixed.third,
+        )
+        return when {
+            movingToFixed < 0 -> rawToMoving > 0 && rawToFixed <= 0
+            movingToFixed > 0 -> rawToMoving < 0 && rawToFixed >= 0
+            else -> false
+        }
     }
 
     /**

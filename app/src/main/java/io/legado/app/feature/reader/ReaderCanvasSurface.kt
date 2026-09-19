@@ -357,6 +357,7 @@ fun ReaderCanvasSurface(
     // 可以更新竖线和选区，而圆柄仍沿手指的连续轨迹移动。
     var selectionDragHandleCenter by remember { mutableStateOf<Offset?>(null) }
     var selectionDragEndpoint by remember { mutableStateOf<ReaderSelectionEndpoint?>(null) }
+    var selectionDragPreview by remember { mutableStateOf<ReaderSelection?>(null) }
     val selectionHandleRadiusPx = with(LocalDensity.current) { SelectionHandleRadius.toPx() }
     var selectionMenuVisible by remember { mutableStateOf(false) }
     var selectionLayoutRevision by remember { mutableLongStateOf(current.layoutRevision) }
@@ -435,6 +436,7 @@ fun ReaderCanvasSurface(
             selectionMagnifierSource = null
             selectionDragHandleCenter = null
             selectionDragEndpoint = null
+            selectionDragPreview = null
             dismissSelectionMenu()
         }
     }
@@ -718,6 +720,7 @@ fun ReaderCanvasSurface(
             selectionMagnifierSource = null
             selectionDragHandleCenter = null
             selectionDragEndpoint = null
+            selectionDragPreview = null
             selectionMenuVisible = false
         }
     }
@@ -729,6 +732,7 @@ fun ReaderCanvasSurface(
             selectionMagnifierSource = null
             selectionDragHandleCenter = null
             selectionDragEndpoint = null
+            selectionDragPreview = null
             showSelectionMenu(selection, latestPages)
         }
     }
@@ -767,6 +771,7 @@ fun ReaderCanvasSurface(
             ) && selection != null && !showSelectionMenu(selection, latestPages)
         ) {
             textSelection = null
+            selectionDragPreview = null
             selectionMagnifierSource = null
             selectionDragHandleCenter = null
             selectionDragEndpoint = null
@@ -938,6 +943,7 @@ fun ReaderCanvasSurface(
                 var handleHasMoved = false
                 var suppressTap = false
                 var pointerPosition = down.position
+                selectionDragPreview = null
                 val downWindow = turnedWindow ?: currentPageWindow()
                 val downSelectionLayout = pageViewportLayout(downWindow)
                 val downPlacement = downSelectionLayout.pageAt(down.position.x, down.position.y)
@@ -999,6 +1005,7 @@ fun ReaderCanvasSurface(
                         textSelection = null
                         selectionMagnifierSource = null
                         selectionDragEndpoint = null
+                        selectionDragPreview = null
                         dismissSelectionMenu()
                         suppressTap = true
                     } else dismissSelectionMenu()
@@ -1023,6 +1030,7 @@ fun ReaderCanvasSurface(
                     if (!latestSelectionEnabled || latestAutoPageActive) return@launch
                     ReaderSelectionPolicy.startWord(page, down.position.x, downPageY)?.let {
                         textSelection = it
+                        selectionDragPreview = null
                         selectionMagnifierSource = selectionCursorCenter(
                             it,
                             ReaderSelectionEndpoint.FOCUS,
@@ -1090,6 +1098,7 @@ fun ReaderCanvasSurface(
                             } ?: change.position.y
                             val placement = pageViewportLayout()
                                 .pageAt(cursorViewportX, cursorViewportY)
+                            selectionDragPreview = null
                             if (placement != null && selection != null) {
                                 val page = placement.page
                                 val pageY = placement.localY(cursorViewportY)
@@ -1107,7 +1116,7 @@ fun ReaderCanvasSurface(
                                 val canCrossChapter =
                                     transitionMode == ReaderTransitionMode.SCROLL
                                 if (movingEndpoint != null) {
-                                    val updatedSelection = ReaderSelectionPolicy.moveEndpoint(
+                                    val moveResult = ReaderSelectionPolicy.moveEndpointWithPreview(
                                         selection,
                                         page,
                                         cursorViewportX,
@@ -1116,6 +1125,8 @@ fun ReaderCanvasSurface(
                                         allowChapterCrossing = canCrossChapter,
                                         snapMisses = grabbedEndpoint != null,
                                     )
+                                    val updatedSelection = moveResult.selection
+                                    selectionDragPreview = moveResult.contractionPreview
                                     if (updatedSelection != selection) {
                                         textSelection = updatedSelection
                                         if (latestSelectionHapticsEnabled) {
@@ -1123,7 +1134,7 @@ fun ReaderCanvasSurface(
                                         }
                                     }
                                     selectionMagnifierSource = selectionCursorCenter(
-                                        updatedSelection,
+                                        moveResult.contractionPreview ?: updatedSelection,
                                         movingEndpoint,
                                         draggedHandleCenter = draggedHandleCenter,
                                     )
@@ -1257,6 +1268,7 @@ fun ReaderCanvasSurface(
                     longPressJob.cancel()
                     selectionDragHandleCenter = null
                     selectionDragEndpoint = null
+                    selectionDragPreview = null
                     if (!released) {
                         bookmarkArmed = false
                         bookmarkOffset = 0f
@@ -1382,6 +1394,7 @@ fun ReaderCanvasSurface(
                                 anchorIsTitle = first.emphasized,
                                 focusIsTitle = last.emphasized,
                             )
+                            selectionDragPreview = null
                             textSelection = markingSelection
                             showSelectionMenu(markingSelection, downWindow)
                             true
@@ -1430,7 +1443,7 @@ fun ReaderCanvasSurface(
                     offsetYState = scrollOffsetState,
                     selection = selectionColor,
                     readAloud = textAccentColor,
-                    selectionProvider = { textSelection },
+                    selectionProvider = { selectionDragPreview ?: textSelection },
                     selectionPreviewStyle = selectionPreviewStyle,
                     cachedImage = cachedImage,
                     loadImage = loadImage,
@@ -1454,7 +1467,7 @@ fun ReaderCanvasSurface(
                 backgroundImageAlpha,
                 selectionColor,
                 textAccentColor,
-                textSelection,
+                selectionDragPreview ?: textSelection,
                 selectionPreviewStyle,
                 cachedImage,
                 loadImage
@@ -1471,7 +1484,7 @@ fun ReaderCanvasSurface(
                             translationY = offsetY + transform.translationY
                             alpha = transform.alpha
                         },
-                    textSelection,
+                    selectionDragPreview ?: textSelection,
                     selectionPreviewStyle,
                     cachedImage,
                     loadImage,
@@ -1518,7 +1531,7 @@ fun ReaderCanvasSurface(
                         selectionColor,
                         textAccentColor,
                         Modifier.fillMaxSize(),
-                        textSelection,
+                        selectionDragPreview ?: textSelection,
                         selectionPreviewStyle,
                         cachedImage,
                         loadImage

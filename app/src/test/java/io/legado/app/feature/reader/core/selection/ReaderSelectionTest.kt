@@ -47,6 +47,23 @@ class ReaderSelectionTest {
             (element.bounds.top + element.bounds.bottom) / 2f
     }
 
+    private fun moveWithPreview(
+        selection: ReaderSelection,
+        page: ReaderPage,
+        elementIndex: Int,
+        endpoint: ReaderSelectionEndpoint,
+    ): ReaderSelectionMoveResult {
+        val element = page.elements.filterIsInstance<ReaderElement.Text>()[elementIndex]
+        return ReaderSelectionPolicy.moveEndpointWithPreview(
+            selection,
+            page,
+            (element.bounds.left + element.bounds.right) / 2f,
+            (element.bounds.top + element.bounds.bottom) / 2f,
+            endpoint,
+            Locale.ENGLISH,
+        )
+    }
+
     @Test fun reverseSelectionNormalizesAndPreservesTextOrder() {
         val selection = ReaderSelection(0, 2, 0)
         assertEquals(0, selection.start)
@@ -196,6 +213,214 @@ class ReaderSelectionTest {
         )
 
         assertEquals("quick brown fox", extended.selectedText(latin))
+    }
+
+    @Test fun longPressContinuationCanPreviewLatinContractionWithoutChangingSemanticWord() {
+        val latin = textPage("one internationalization")
+        val selection = ReaderSelection(0, 0, 23)
+
+        val result = moveWithPreview(
+            selection, latin, 10, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals(selection, result.selection)
+        assertEquals("one interna", result.contractionPreview?.selectedText(latin))
+    }
+
+    @Test fun latinExpansionKeepsWholeWordWithoutACharacterPreview() {
+        val latin = textPage("one internationalization")
+        val selection = ReaderSelection(0, 0, 2)
+
+        val result = moveWithPreview(
+            selection, latin, 10, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals("one internationalization", result.selection.selectedText(latin))
+        assertNull(result.contractionPreview)
+    }
+
+    @Test fun cjkContractionKeepsItsExistingGraphemeBehaviorWithoutPreview() {
+        val cjk = textPage("我喜欢辣椒")
+        val selection = ReaderSelection(0, 0, 4)
+
+        val result = moveWithPreview(
+            selection, cjk, 3, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals("我喜欢辣", result.selection.selectedText(cjk))
+        assertNull(result.contractionPreview)
+    }
+
+    @Test fun mixedDragClearsPreviewInCjkAndRestoresItInLatin() {
+        val mixed = textPage("one 中文 two")
+        val selection = ReaderSelection(0, 0, 9)
+
+        val inSecondLatin = moveWithPreview(
+            selection, mixed, 8, ReaderSelectionEndpoint.FOCUS,
+        )
+        val inCjk = moveWithPreview(
+            inSecondLatin.selection, mixed, 5, ReaderSelectionEndpoint.FOCUS,
+        )
+        val inFirstLatin = moveWithPreview(
+            inCjk.selection, mixed, 1, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals("one 中文 tw", inSecondLatin.contractionPreview?.selectedText(mixed))
+        assertNull(inCjk.contractionPreview)
+        assertEquals("one 中文", inCjk.selection.selectedText(mixed))
+        assertEquals("on", inFirstLatin.contractionPreview?.selectedText(mixed))
+        assertEquals("one", inFirstLatin.selection.selectedText(mixed))
+    }
+
+    @Test fun contractionPreviewSupportsAsciiAndCurlyApostrophes() {
+        listOf("x don't", "x don’t").forEach { text ->
+            val latin = textPage(text)
+            val selection = ReaderSelection(0, 0, text.lastIndex)
+
+            val result = moveWithPreview(
+                selection, latin, 4, ReaderSelectionEndpoint.FOCUS,
+            )
+
+            assertEquals(selection, result.selection)
+            assertEquals(text.substring(0, 5), result.contractionPreview?.selectedText(latin))
+        }
+    }
+
+    @Test fun contractionPreviewKeepsAMultiCodeUnitGraphemeIntact() {
+        val values = listOf("x", " ", "c", "a", "f", "e\u0301", "z")
+        val positions = listOf(0, 1, 2, 3, 4, 5, 7)
+        val elements = values.mapIndexed { index, value ->
+            ReaderElement.Text(
+                ReaderRect(index * 10f, 0f, index * 10f + 10f, 20f),
+                15f,
+                value,
+                style,
+                selected = false,
+                emphasized = false,
+                chapterPosition = positions[index],
+                paragraphIndex = 0,
+            )
+        }
+        val latin = page.copy(text = values.joinToString(""), elements = elements)
+        val selection = ReaderSelection(0, 0, 7)
+
+        val result = moveWithPreview(
+            selection, latin, 5, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals(selection, result.selection)
+        assertEquals("x cafe\u0301", result.contractionPreview?.selectedText(latin))
+        assertEquals(5, result.contractionPreview?.focus)
+    }
+
+    @Test fun handleContractionKeepsTheReversedSemanticEndpointIdentity() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 12, 0)
+
+        val result = moveWithPreview(
+            selection, latin, 9, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        assertEquals(12, result.selection.anchor)
+        assertEquals(0, result.selection.focus)
+        assertEquals(9, result.contractionPreview?.anchor)
+        assertEquals(0, result.contractionPreview?.focus)
+        assertEquals("one two th", result.contractionPreview?.selectedText(latin))
+    }
+
+    @Test fun forwardVisualEndAndStartCanPreviewInwardMovement() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 0, 12)
+
+        val endInward = moveWithPreview(
+            selection, latin, 9, ReaderSelectionEndpoint.FOCUS,
+        )
+        val startInward = moveWithPreview(
+            selection, latin, 1, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        assertEquals(selection, endInward.selection)
+        assertEquals("one two th", endInward.contractionPreview?.selectedText(latin))
+        assertEquals(selection, startInward.selection)
+        assertEquals("ne two three", startInward.contractionPreview?.selectedText(latin))
+    }
+
+    @Test fun reverseAnchorAndFocusCanPreviewInwardMovement() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 12, 0)
+
+        val anchorInward = moveWithPreview(
+            selection, latin, 9, ReaderSelectionEndpoint.ANCHOR,
+        )
+        val focusInward = moveWithPreview(
+            selection, latin, 1, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals(selection, anchorInward.selection)
+        assertEquals("one two th", anchorInward.contractionPreview?.selectedText(latin))
+        assertEquals(selection, focusInward.selection)
+        assertEquals("ne two three", focusInward.contractionPreview?.selectedText(latin))
+    }
+
+    @Test fun outwardMovementInBothDirectionsDoesNotPreview() {
+        val latin = textPage("one two three")
+        val endExpansion = moveWithPreview(
+            ReaderSelection(0, 0, 6), latin, 9, ReaderSelectionEndpoint.FOCUS,
+        )
+        val startExpansion = moveWithPreview(
+            ReaderSelection(0, 4, 12), latin, 1, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        assertEquals("one two three", endExpansion.selection.selectedText(latin))
+        assertNull(endExpansion.contractionPreview)
+        assertEquals("one two three", startExpansion.selection.selectedText(latin))
+        assertNull(startExpansion.contractionPreview)
+    }
+
+    @Test fun anchorCrossingFocusDoesNotPreview() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 0, 6)
+
+        val crossed = moveWithPreview(
+            selection, latin, 9, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        assertEquals(12, crossed.selection.anchor)
+        assertEquals(6, crossed.selection.focus)
+        assertNull(crossed.contractionPreview)
+    }
+
+    @Test fun focusCrossingAnchorDoesNotPreview() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 6, 12)
+
+        val crossed = moveWithPreview(
+            selection, latin, 5, ReaderSelectionEndpoint.FOCUS,
+        )
+
+        assertEquals(6, crossed.selection.anchor)
+        assertEquals(4, crossed.selection.focus)
+        assertNull(crossed.contractionPreview)
+    }
+
+    @Test fun movementAfterCrossingIsReclassifiedFromTheNewEndpointSide() {
+        val latin = textPage("one two three four")
+        val selection = ReaderSelection(0, 0, 6)
+        val crossed = moveWithPreview(
+            selection, latin, 9, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        val fartherOut = moveWithPreview(
+            crossed.selection, latin, 15, ReaderSelectionEndpoint.ANCHOR,
+        )
+        val backTowardFixed = moveWithPreview(
+            crossed.selection, latin, 9, ReaderSelectionEndpoint.ANCHOR,
+        )
+
+        assertEquals(17, fartherOut.selection.anchor)
+        assertNull(fartherOut.contractionPreview)
+        assertEquals(crossed.selection, backTowardFixed.selection)
+        assertEquals("o th", backTowardFixed.contractionPreview?.selectedText(latin))
     }
 
     @Test fun reverseLatinDragSnapsFocusToTheOuterWordBoundary() {
