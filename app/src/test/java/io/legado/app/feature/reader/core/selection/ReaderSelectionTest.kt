@@ -21,6 +21,32 @@ class ReaderSelectionTest {
         ), 1L,
     )
 
+    private fun textPage(
+        text: String,
+        paragraphIndex: Int = 0,
+    ): ReaderPage {
+        val elements = mutableListOf<ReaderElement.Text>()
+        var position = 0
+        var x = 0f
+        text.forEach { char ->
+            elements += ReaderElement.Text(
+                ReaderRect(x, 0f, x + 10f, 20f), 15f, char.toString(), style,
+                selected = false, emphasized = false, chapterPosition = position,
+                paragraphIndex = paragraphIndex,
+            )
+            position++
+            x += 10f
+        }
+        return page.copy(text = text, elements = elements)
+    }
+
+    private fun elementCenter(page: ReaderPage, text: String): Pair<Float, Float> {
+        val element = page.elements.filterIsInstance<ReaderElement.Text>()
+            .first { it.value == text }
+        return (element.bounds.left + element.bounds.right) / 2f to
+            (element.bounds.top + element.bounds.bottom) / 2f
+    }
+
     @Test fun reverseSelectionNormalizesAndPreservesTextOrder() {
         val selection = ReaderSelection(0, 2, 0)
         assertEquals(0, selection.start)
@@ -77,6 +103,277 @@ class ReaderSelectionTest {
         assertEquals("reader", selection.selectedText(wrapped))
         assertEquals(0, selection.start)
         assertEquals(4, selection.endInclusive)
+    }
+
+    @Test fun endpointSnappingKeepsAWordWholeAcrossVisualLines() {
+        val values = listOf("read", "er", " ", "canvas")
+        var position = 0
+        val elements = values.mapIndexed { index, value ->
+            ReaderElement.Text(
+                bounds = ReaderRect(
+                    if (index == 1) 0f else index * 20f,
+                    if (index == 1) 20f else 0f,
+                    if (index == 1) 20f else index * 20f + 20f,
+                    if (index == 1) 40f else 20f,
+                ),
+                baselinePx = if (index == 1) 35f else 15f,
+                value = value,
+                style = style,
+                selected = false,
+                emphasized = false,
+                chapterPosition = position.also { position += value.length },
+                paragraphIndex = 0,
+            )
+        }
+        val wrapped = page.copy(text = values.joinToString(""), elements = elements)
+        val started = ReaderSelectionPolicy.startWord(wrapped, 65f, 10f, Locale.ENGLISH)!!
+
+        val extended = ReaderSelectionPolicy.moveEndpoint(
+            started,
+            wrapped,
+            5f,
+            30f,
+            started.visualStartEndpoint(),
+            Locale.ENGLISH,
+        )
+
+        assertEquals("reader canvas", extended.selectedText(wrapped))
+    }
+
+    @Test fun longPressSelectsSimpleLatinWord() {
+        val latin = textPage("interesting")
+
+        val selection = ReaderSelectionPolicy.startWord(latin, 45f, 10f, Locale.ENGLISH)!!
+
+        assertEquals("interesting", selection.selectedText(latin))
+    }
+
+    @Test fun tinyMovementAfterLongPressDoesNotCollapseInitialWord() {
+        val latin = textPage("interesting")
+        val started = ReaderSelectionPolicy.startWord(latin, 45f, 10f, Locale.ENGLISH)!!
+        val drag = ReaderSelectionDragState().update(
+            longPressed = true,
+            handleGrabbed = false,
+            distancePx = 3f,
+            touchSlopPx = 8f,
+        )
+
+        val afterJitter = if (drag.started) {
+            ReaderSelectionPolicy.moveEndpoint(
+                started, latin, 55f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+            )
+        } else started
+
+        assertEquals("interesting", afterJitter.selectedText(latin))
+        assertEquals(started, afterJitter)
+    }
+
+    @Test fun selectionExtensionBeginsAfterDeliberateDragTransition() {
+        val latin = textPage("quick brown fox")
+        val started = ReaderSelectionPolicy.startWord(latin, 15f, 10f, Locale.ENGLISH)!!
+        val drag = ReaderSelectionDragState().update(
+            longPressed = true,
+            handleGrabbed = false,
+            distancePx = 9f,
+            touchSlopPx = 8f,
+        )
+
+        val extended = if (drag.started) {
+            ReaderSelectionPolicy.moveEndpoint(
+                started, latin, 125f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+            )
+        } else started
+
+        assertEquals("quick brown fox", extended.selectedText(latin))
+    }
+
+    @Test fun forwardLatinDragSnapsFocusToWholeWord() {
+        val latin = textPage("quick brown fox")
+        val started = ReaderSelectionPolicy.startWord(latin, 15f, 10f, Locale.ENGLISH)!!
+
+        val extended = ReaderSelectionPolicy.moveEndpoint(
+            started, latin, 125f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+        )
+
+        assertEquals("quick brown fox", extended.selectedText(latin))
+    }
+
+    @Test fun reverseLatinDragSnapsFocusToTheOuterWordBoundary() {
+        val latin = textPage("one two three")
+        val started = ReaderSelectionPolicy.startWord(latin, 95f, 10f, Locale.ENGLISH)!!
+        val endpoint = ReaderSelectionPolicy.dragEndpoint(started, latin, 55f, 10f)!!
+
+        val extended = ReaderSelectionPolicy.moveEndpoint(
+            started, latin, 55f, 10f, endpoint, Locale.ENGLISH,
+        )
+
+        assertEquals(started.visualStartEndpoint(), endpoint)
+        assertEquals("two three", extended.selectedText(latin))
+    }
+
+    @Test fun forwardContinuationChoosesTheVisualEndEndpoint() {
+        val latin = textPage("quick brown fox")
+        val started = ReaderSelectionPolicy.startWord(latin, 15f, 10f, Locale.ENGLISH)!!
+
+        assertEquals(
+            started.visualEndEndpoint(),
+            ReaderSelectionPolicy.dragEndpoint(started, latin, 125f, 10f),
+        )
+    }
+
+    @Test fun handleDraggingUsesTheSameLatinWordSnapping() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 0, 12)
+        val endpoint = selection.visualStartEndpoint()
+
+        val moved = ReaderSelectionPolicy.moveEndpoint(
+            selection, latin, 55f, 10f, endpoint, Locale.ENGLISH,
+        )
+
+        assertEquals("two three", moved.selectedText(latin))
+    }
+
+    /**
+     * Only the moving endpoint snaps. The fixed endpoint deliberately stays at its original
+     * element (inside "one" in this synthetic setup), so the resulting "e two three" proves
+     * semantic endpoint identity rather than promising to repair a pre-existing partial word.
+     */
+    @Test fun crossingKeepsMovingEndpointIdentityWithoutRelocatingTheFixedEndpoint() {
+        val latin = textPage("one two three")
+        val selection = ReaderSelection(0, 0, 2)
+        val endpoint = selection.visualStartEndpoint()
+        val crossed = ReaderSelectionPolicy.moveEndpoint(
+            selection, latin, 55f, 10f, endpoint, Locale.ENGLISH,
+        )
+        val continued = ReaderSelectionPolicy.moveEndpoint(
+            crossed, latin, 105f, 10f, endpoint, Locale.ENGLISH,
+        )
+
+        assertEquals("e two three", continued.selectedText(latin))
+        assertEquals(12, continued.anchor)
+        assertEquals(2, continued.focus)
+    }
+
+    @Test fun apostrophesRemainInsideLatinTokens() {
+        listOf("don't", "don’t", "reader's", "reader’s").forEach { word ->
+            val latin = textPage(word)
+            val selection = ReaderSelectionPolicy.startWord(
+                latin, latin.widthPx / 2f, 10f, Locale.ENGLISH,
+            )!!
+            assertEquals(word, selection.selectedText(latin))
+        }
+    }
+
+    @Test fun accentedAndCombiningLatinRemainWhole() {
+        listOf("café", "cafe\u0301").forEach { word ->
+            val latin = textPage(word)
+            val selection = ReaderSelectionPolicy.startWord(
+                latin, 15f, 10f, Locale.ENGLISH,
+            )!!
+            assertEquals(word, selection.selectedText(latin))
+        }
+    }
+
+    @Test fun multiCodeUnitCombiningGraphemeRemainsOneSelectionElement() {
+        val values = listOf("c", "a", "f", "e\u0301", " ", "x")
+        val positions = listOf(0, 1, 2, 3, 5, 6)
+        val elements = values.mapIndexed { index, value ->
+            ReaderElement.Text(
+                ReaderRect(index * 10f, 0f, index * 10f + 10f, 20f),
+                15f,
+                value,
+                style,
+                selected = false,
+                emphasized = false,
+                chapterPosition = positions[index],
+                paragraphIndex = 0,
+            )
+        }
+        val combining = page.copy(text = values.joinToString(""), elements = elements)
+
+        val selection = ReaderSelectionPolicy.startWord(
+            combining, 35f, 10f, Locale.ENGLISH,
+        )!!
+
+        assertEquals("cafe\u0301", selection.selectedText(combining))
+        assertEquals(0, selection.anchor)
+        assertEquals(3, selection.focus)
+        assertEquals("e\u0301", elements[3].value)
+        assertEquals(2, elements[3].value.length)
+        assertEquals(5, elements[4].chapterPosition)
+    }
+
+    @Test fun digitsAndAlphanumericTokensSnapAsWholeTokens() {
+        listOf("12345", "r2d2").forEach { word ->
+            val latin = textPage(word)
+            val selection = ReaderSelectionPolicy.startWord(
+                latin, 15f, 10f, Locale.ENGLISH,
+            )!!
+            assertEquals(word, selection.selectedText(latin))
+        }
+    }
+
+    @Test fun surroundingPunctuationIsNotIncludedInLatinWord() {
+        listOf("hello,", "(hello)", "“hello”", "'hello'", "’hello’").forEach { text ->
+            val latin = textPage(text)
+            val hit = latin.elements.filterIsInstance<ReaderElement.Text>()
+                .first { it.value == "e" }
+            val selection = ReaderSelectionPolicy.startWord(
+                latin, (hit.bounds.left + hit.bounds.right) / 2f, 10f, Locale.ENGLISH,
+            )!!
+            assertEquals("hello", selection.selectedText(latin))
+        }
+    }
+
+    @Test fun dotAndHyphenRemainNaturalWordBoundaries() {
+        listOf(
+            Triple("README.md", "A", "README"),
+            Triple("README.md", "d", "md"),
+            Triple("mother-in-law", "i", "in"),
+        ).forEach { (text, hitValue, expected) ->
+            val latin = textPage(text)
+            val (x, y) = elementCenter(latin, hitValue)
+            val selection = ReaderSelectionPolicy.startWord(latin, x, y, Locale.ENGLISH)!!
+            assertEquals(expected, selection.selectedText(latin))
+        }
+    }
+
+    @Test fun mixedCjkAndLatinOnlySnapsTheLatinToken() {
+        listOf("中文English中文", "中文 English 中文").forEach { text ->
+            val mixed = textPage(text)
+            val (x, y) = elementCenter(mixed, "g")
+            val selection = ReaderSelectionPolicy.startWord(mixed, x, y, Locale.ENGLISH)!!
+            assertEquals("English", selection.selectedText(mixed))
+        }
+    }
+
+    @Test fun continuousDragSwitchesFromLatinToCjkAndBackToLatinGranularity() {
+        val mixed = textPage("中文 one 中文 two 中文")
+        val started = ReaderSelectionPolicy.startWord(mixed, 45f, 10f, Locale.ENGLISH)!!
+
+        val onCjk = ReaderSelectionPolicy.moveEndpoint(
+            started, mixed, 75f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+        )
+        val onSecondLatin = ReaderSelectionPolicy.moveEndpoint(
+            onCjk, mixed, 115f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+        )
+
+        assertEquals("one 中", onCjk.selectedText(mixed))
+        assertEquals(7, onCjk.focus)
+        assertEquals("one 中文 two", onSecondLatin.selectedText(mixed))
+        assertEquals(12, onSecondLatin.focus)
+    }
+
+    @Test fun pureCjkEndpointRemainsGraphemeGranular() {
+        val cjk = textPage("我喜欢辣椒")
+        // Endpoint dragging is independent of startWord's preserved BreakIterator behavior.
+        // Start from an existing one-grapheme selection so this test only covers drag granularity.
+        val started = ReaderSelectionPolicy.start(cjk, 5f, 10f)!!
+        val moved = ReaderSelectionPolicy.moveEndpoint(
+            started, cjk, 35f, 10f, ReaderSelectionEndpoint.FOCUS, Locale.CHINESE,
+        )
+
+        assertEquals("我喜欢辣", moved.selectedText(cjk))
     }
 
     @Test fun longPressKeepsWordSelectionInsideTheHitParagraph() {

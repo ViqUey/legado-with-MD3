@@ -45,7 +45,7 @@ data class ReaderSelection(
         ) <= 0
     val startChapterIndex: Int get() = if (forward) chapterIndex else focusChapterIndex
     val endChapterIndex: Int get() = if (forward) focusChapterIndex else chapterIndex
-    private val startIsTitle: Boolean get() = if (forward) anchorIsTitle else focusIsTitle
+    internal val startIsTitle: Boolean get() = if (forward) anchorIsTitle else focusIsTitle
     private val endIsTitle: Boolean get() = if (forward) focusIsTitle else anchorIsTitle
     val start: Int get() = if (forward) anchor else focus
     val endInclusive: Int get() = if (forward) focus else anchor
@@ -168,6 +168,18 @@ data class ReaderSelection(
 }
 
 object ReaderSelectionPolicy {
+    private data class ParagraphHit(
+        val hit: ReaderElement.Text,
+        val elements: List<ReaderElement.Text>,
+        val text: String,
+        val hitOffset: Int,
+    )
+
+    private data class ElementRange(
+        val first: ReaderElement.Text,
+        val last: ReaderElement.Text,
+    )
+
     fun start(page: ReaderPage, x: Float, y: Float): ReaderSelection? =
         (page.elementAt(x, y) as? ReaderElement.Text)?.let {
             ReaderSelection(page.id.chapterIndex, it.chapterPosition, it.chapterPosition, it.emphasized)
@@ -207,7 +219,31 @@ object ReaderSelectionPolicy {
     ): ReaderSelection? {
         // Glyph bounds intentionally omit letter- and justification-spacing. Long presses in
         // those visual gaps should start selection just like handle drags do.
-        val hit = snapToText(page, x, y) ?: return null
+        val context = paragraphHit(page, x, y, snapMisses = true) ?: return null
+        // Preserve the original cross-language long-press behavior. Latin-only validation is
+        // intentionally limited to moving endpoints; CJK and other scripts keep BreakIterator's
+        // existing initial selection semantics.
+        val range = breakIteratorRange(context, locale)?.let { elementRange(context, it) }
+        return ReaderSelection(
+            chapterIndex = page.id.chapterIndex,
+            anchor = range?.first?.chapterPosition ?: context.hit.chapterPosition,
+            focus = range?.last?.chapterPosition ?: context.hit.chapterPosition,
+            anchorIsTitle = context.hit.emphasized,
+        )
+    }
+
+    private fun paragraphHit(
+        page: ReaderPage,
+        x: Float,
+        y: Float,
+        snapMisses: Boolean,
+    ): ParagraphHit? {
+        val hit = (
+            (page.elementAt(x, y) as? ReaderElement.Text)
+                ?: if (snapMisses) snapToText(page, x, y) else null
+            ) ?: return null
+        // Deliberately limited to the current page fragment. Reconstructing a token that crosses
+        // a page boundary needs paginator context and remains outside selection gesture policy.
         val paragraph = page.elements.filterIsInstance<ReaderElement.Text>()
             .filter {
                 it.emphasized == hit.emphasized &&
@@ -216,36 +252,165 @@ object ReaderSelectionPolicy {
             .sortedBy(ReaderElement.Text::chapterPosition)
         val hitIndex = paragraph.indexOf(hit)
         if (hitIndex < 0) return null
-
         val text = paragraph.joinToString(separator = "", transform = ReaderElement.Text::value)
         val hitOffset = paragraph.take(hitIndex).sumOf { it.value.length }
+        return ParagraphHit(hit, paragraph, text, hitOffset)
+    }
+
+    private fun breakIteratorRange(context: ParagraphHit, locale: Locale): IntRange? {
+        val text = context.text
         val boundary = BreakIterator.getWordInstance(locale).apply { setText(text) }
         var start = boundary.first()
         var end = boundary.next()
-        while (end != BreakIterator.DONE && hitOffset !in start until end) {
+        while (end != BreakIterator.DONE && context.hitOffset !in start until end) {
             start = end
             end = boundary.next()
         }
-        if (end == BreakIterator.DONE) {
-            return ReaderSelection(page.id.chapterIndex, hit.chapterPosition, hit.chapterPosition, hit.emphasized)
-        }
+        if (end == BreakIterator.DONE) return null
+        return start until end
+    }
 
+    private fun latinWordRange(context: ParagraphHit, locale: Locale): ElementRange? {
+        val text = context.text
+        val candidate = breakIteratorRange(context, locale) ?: return null
+        val expanded = expandLatinToken(text, candidate.first, candidate.last + 1)
+            ?.takeIf { text.substring(it.first, it.last + 1).isLatinLexicalToken() }
+            ?: expandLatinToken(
+                text,
+                context.hitOffset,
+                context.hitOffset + context.hit.value.length,
+            )?.takeIf { text.substring(it.first, it.last + 1).isLatinLexicalToken() }
+            ?: return null
+        return elementRange(context, expanded)
+    }
+
+    private fun elementRange(context: ParagraphHit, range: IntRange): ElementRange? {
         var offset = 0
         var first: ReaderElement.Text? = null
         var last: ReaderElement.Text? = null
-        paragraph.forEach { element ->
+        context.elements.forEach { element ->
             val elementEnd = offset + element.value.length
-            if (offset < end && elementEnd > start) {
+            if (offset <= range.last && elementEnd > range.first) {
                 if (first == null) first = element
                 last = element
             }
             offset = elementEnd
         }
-        return ReaderSelection(
-            chapterIndex = page.id.chapterIndex,
-            anchor = first?.chapterPosition ?: hit.chapterPosition,
-            focus = last?.chapterPosition ?: hit.chapterPosition,
-            anchorIsTitle = hit.emphasized,
+        return first?.let { ElementRange(it, checkNotNull(last)) }
+    }
+
+    private fun expandLatinToken(text: String, seedStart: Int, seedEnd: Int): IntRange? {
+        if (seedStart !in 0 until text.length || seedEnd !in 1..text.length) return null
+        var start = seedStart
+        var end = seedEnd
+        while (start > 0) {
+            val previous = text.offsetByCodePoints(start, -1)
+            if (!text.isLatinTokenPartAt(previous)) break
+            start = previous
+        }
+        while (end < text.length) {
+            if (!text.isLatinTokenPartAt(end)) break
+            end = text.offsetByCodePoints(end, 1)
+        }
+        return start until end
+    }
+
+    private fun String.isLatinLexicalToken(): Boolean {
+        val codePoints = codePoints().toArray()
+        var hasCore = false
+        codePoints.forEachIndexed { index, codePoint ->
+            when {
+                Character.isLetter(codePoint) -> {
+                    if (Character.UnicodeScript.of(codePoint) != Character.UnicodeScript.LATIN) {
+                        return false
+                    }
+                    hasCore = true
+                }
+                Character.isDigit(codePoint) -> hasCore = true
+                Character.getType(codePoint) == Character.NON_SPACING_MARK.toInt() ||
+                    Character.getType(codePoint) == Character.COMBINING_SPACING_MARK.toInt() -> Unit
+                codePoint == '\''.code || codePoint == 0x2019 -> {
+                    if (index == 0 || index == codePoints.lastIndex ||
+                        !isLatinTokenCoreOrMark(codePoints[index - 1]) ||
+                        !isLatinTokenCoreOrMark(codePoints[index + 1])
+                    ) return false
+                }
+                else -> return false
+            }
+        }
+        return hasCore
+    }
+
+    private fun String.isLatinTokenPartAt(index: Int): Boolean {
+        val codePoint = codePointAt(index)
+        if (codePoint != '\''.code && codePoint != 0x2019) {
+            return isLatinTokenCoreOrMark(codePoint)
+        }
+        if (index == 0) return false
+        val next = offsetByCodePoints(index, 1)
+        if (next >= length) return false
+        val previous = offsetByCodePoints(index, -1)
+        return isLatinTokenCoreOrMark(codePointAt(previous)) &&
+            isLatinTokenCoreOrMark(codePointAt(next))
+    }
+
+    private fun isLatinTokenCoreOrMark(codePoint: Int): Boolean =
+        Character.isDigit(codePoint) ||
+            Character.isLetter(codePoint) &&
+            Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN ||
+            Character.getType(codePoint) == Character.NON_SPACING_MARK.toInt() ||
+            Character.getType(codePoint) == Character.COMBINING_SPACING_MARK.toInt()
+
+    fun dragEndpoint(
+        selection: ReaderSelection,
+        page: ReaderPage,
+        x: Float,
+        y: Float,
+    ): ReaderSelectionEndpoint? {
+        val hit = page.elementAt(x, y) as? ReaderElement.Text ?: return null
+        if (selection.contains(hit, page.id.chapterIndex)) return null
+        return if (comparePosition(
+                page.id.chapterIndex, hit.emphasized, hit.chapterPosition,
+                selection.startChapterIndex, selection.startIsTitle, selection.start,
+            ) < 0
+        ) selection.visualStartEndpoint() else selection.visualEndEndpoint()
+    }
+
+    fun moveEndpoint(
+        selection: ReaderSelection,
+        page: ReaderPage,
+        x: Float,
+        y: Float,
+        endpoint: ReaderSelectionEndpoint,
+        locale: Locale = Locale.getDefault(),
+        allowChapterCrossing: Boolean = false,
+        snapMisses: Boolean = false,
+    ): ReaderSelection {
+        if (!allowChapterCrossing && selection.chapterIndex != page.id.chapterIndex) return selection
+        val context = paragraphHit(page, x, y, snapMisses) ?: return selection
+        val range = latinWordRange(context, locale)
+        val fixed = when (endpoint) {
+            ReaderSelectionEndpoint.ANCHOR -> Triple(
+                selection.focusChapterIndex, selection.focusIsTitle, selection.focus,
+            )
+            ReaderSelectionEndpoint.FOCUS -> Triple(
+                selection.chapterIndex, selection.anchorIsTitle, selection.anchor,
+            )
+        }
+        val hitBeforeFixed = comparePosition(
+            page.id.chapterIndex, context.hit.emphasized, context.hit.chapterPosition,
+            fixed.first, fixed.second, fixed.third,
+        ) < 0
+        val target = when {
+            range == null -> context.hit
+            hitBeforeFixed -> range.first
+            else -> range.last
+        }
+        return selection.moveEndpoint(
+            endpoint,
+            target.chapterPosition,
+            target.emphasized,
+            page.id.chapterIndex,
         )
     }
 
@@ -261,13 +426,26 @@ object ReaderSelectionPolicy {
         y: Float,
         allowChapterCrossing: Boolean = false,
     ): ReaderSelection {
-        if (!allowChapterCrossing && selection.chapterIndex != page.id.chapterIndex) return selection
-        return (page.elementAt(x, y) as? ReaderElement.Text)?.let {
-            selection.copy(
-                focus = it.chapterPosition,
-                focusIsTitle = it.emphasized,
-                focusChapterIndex = page.id.chapterIndex,
-            )
-        } ?: selection
+        return moveEndpoint(
+            selection = selection,
+            page = page,
+            x = x,
+            y = y,
+            endpoint = ReaderSelectionEndpoint.FOCUS,
+            allowChapterCrossing = allowChapterCrossing,
+        )
+    }
+
+    private fun comparePosition(
+        leftChapter: Int,
+        leftIsTitle: Boolean,
+        left: Int,
+        rightChapter: Int,
+        rightIsTitle: Boolean,
+        right: Int,
+    ): Int {
+        if (leftChapter != rightChapter) return leftChapter.compareTo(rightChapter)
+        return if (leftIsTitle == rightIsTitle) left.compareTo(right)
+        else if (leftIsTitle) -1 else 1
     }
 }

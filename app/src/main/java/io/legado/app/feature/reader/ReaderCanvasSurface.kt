@@ -117,6 +117,7 @@ import io.legado.app.feature.reader.core.readaloud.ReaderVisibleTextPosition
 import io.legado.app.feature.reader.core.readaloud.ReaderVisibleTextPositionPolicy
 import io.legado.app.feature.reader.core.selection.ReaderPageChangeOrigin
 import io.legado.app.feature.reader.core.selection.ReaderSelection
+import io.legado.app.feature.reader.core.selection.ReaderSelectionDragState
 import io.legado.app.feature.reader.core.selection.ReaderSelectionEndpoint
 import io.legado.app.feature.reader.core.selection.ReaderSelectionLifecyclePolicy
 import io.legado.app.feature.reader.core.selection.ReaderSelectionMenuAnchor
@@ -929,6 +930,7 @@ fun ReaderCanvasSurface(
                 var scrollHitBoundary: ReaderTurnDirection? = null
                 var movedPastSlop = false
                 var longPressed = false
+                var selectionDragState = ReaderSelectionDragState()
                 var grabbingStart = false
                 var grabbingEnd = false
                 var grabbedEndpoint: ReaderSelectionEndpoint? = null
@@ -1051,14 +1053,26 @@ fun ReaderCanvasSurface(
                         }
                         if (longPressed || grabbingStart || grabbingEnd) {
                             val selection = textSelection
-                            val movingEndpoint = grabbedEndpoint ?: ReaderSelectionEndpoint.FOCUS
+                            selectionDragState = selectionDragState.update(
+                                longPressed = longPressed,
+                                handleGrabbed = grabbingStart || grabbingEnd,
+                                distancePx = total.getDistance(),
+                                touchSlopPx = pageTouchSlop,
+                            )
+                            if (!selectionDragState.started) {
+                                selectionMagnifierSource = selection?.let {
+                                    selectionCursorCenter(it, ReaderSelectionEndpoint.FOCUS)
+                                }
+                                change.consume()
+                                continue
+                            }
                             // PointerInput 会先派发一个与 DOWN 位置相同的事件。把手尚未移动时
                             // 不能再用行底去 hit-test，否则该边界可能直接吸附到下一行。
                             if (grabbedEndpoint != null && !handleHasMoved) {
                                 handleHasMoved = change.position != down.position
                                 if (!handleHasMoved) {
                                     selectionMagnifierSource = selection?.let {
-                                        selectionCursorCenter(it, movingEndpoint)
+                                        selectionCursorCenter(it, checkNotNull(grabbedEndpoint))
                                     }
                                     change.consume()
                                     continue
@@ -1079,47 +1093,29 @@ fun ReaderCanvasSurface(
                             if (placement != null && selection != null) {
                                 val page = placement.page
                                 val pageY = placement.localY(cursorViewportY)
-                                val hit =
-                                    ReaderSelectionPolicy.start(page, cursorViewportX, pageY)
-                                        ?: if (grabbedEndpoint != null) {
-                                            ReaderSelectionPolicy.snapToText(
-                                                page,
-                                                cursorViewportX,
-                                                pageY
-                                            )?.let {
-                                                ReaderSelection(
-                                                    page.id.chapterIndex,
-                                                    it.chapterPosition,
-                                                    it.chapterPosition,
-                                                    it.emphasized
-                                                )
-                                            }
-                                        } else {
-                                            null
-                                        }
+                                if (grabbedEndpoint == null && selectionDragEndpoint == null) {
+                                    selectionDragEndpoint = ReaderSelectionPolicy.dragEndpoint(
+                                        selection,
+                                        page,
+                                        cursorViewportX,
+                                        pageY,
+                                    )
+                                }
+                                val movingEndpoint = grabbedEndpoint ?: selectionDragEndpoint
                                 // 滚动模式堆叠的下邻页属于下一章，允许选区跨过去（旧 View 的
                                 // 选区分词同样覆盖 relativePage 0..2）；分页模式保持单章。
                                 val canCrossChapter =
                                     transitionMode == ReaderTransitionMode.SCROLL
-                                if (hit != null && (canCrossChapter ||
-                                            hit.chapterIndex == selection.chapterIndex)
-                                ) {
-                                    val updatedSelection = when {
-                                        grabbedEndpoint != null -> selection.moveEndpoint(
-                                            grabbedEndpoint,
-                                            hit.anchor,
-                                            hit.anchorIsTitle,
-                                            chapter = hit.chapterIndex,
-                                        )
-
-                                        else -> ReaderSelectionPolicy.extend(
-                                            selection,
-                                            page,
-                                            cursorViewportX,
-                                            pageY,
-                                            allowChapterCrossing = canCrossChapter,
-                                        )
-                                    }
+                                if (movingEndpoint != null) {
+                                    val updatedSelection = ReaderSelectionPolicy.moveEndpoint(
+                                        selection,
+                                        page,
+                                        cursorViewportX,
+                                        pageY,
+                                        movingEndpoint,
+                                        allowChapterCrossing = canCrossChapter,
+                                        snapMisses = grabbedEndpoint != null,
+                                    )
                                     if (updatedSelection != selection) {
                                         textSelection = updatedSelection
                                         if (latestSelectionHapticsEnabled) {
@@ -1134,7 +1130,7 @@ fun ReaderCanvasSurface(
                                 } else {
                                     selectionMagnifierSource = selectionCursorCenter(
                                         selection,
-                                        movingEndpoint,
+                                        ReaderSelectionEndpoint.FOCUS,
                                         draggedHandleCenter = draggedHandleCenter,
                                     )
                                 }
