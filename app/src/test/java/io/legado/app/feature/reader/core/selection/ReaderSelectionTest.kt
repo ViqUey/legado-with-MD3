@@ -254,12 +254,20 @@ class ReaderSelectionTest {
         assertEquals(2, continued.focus)
     }
 
-    @Test fun apostrophesRemainInsideLatinTokens() {
+    @Test fun endpointSnappingKeepsApostrophesInsideLatinTokens() {
         listOf("don't", "don’t", "reader's", "reader’s").forEach { word ->
             val latin = textPage(word)
-            val selection = ReaderSelectionPolicy.startWord(
-                latin, latin.widthPx / 2f, 10f, Locale.ENGLISH,
-            )!!
+            val started = ReaderSelectionPolicy.start(latin, 5f, 10f)!!
+            val last = latin.elements.filterIsInstance<ReaderElement.Text>().last()
+            val selection = ReaderSelectionPolicy.moveEndpoint(
+                started,
+                latin,
+                (last.bounds.left + last.bounds.right) / 2f,
+                10f,
+                ReaderSelectionEndpoint.FOCUS,
+                Locale.ENGLISH,
+            )
+
             assertEquals(word, selection.selectedText(latin))
         }
     }
@@ -325,15 +333,20 @@ class ReaderSelectionTest {
         }
     }
 
-    @Test fun dotAndHyphenRemainNaturalWordBoundaries() {
+    @Test fun endpointSnappingDoesNotTreatDotOrHyphenAsLatinWordParts() {
         listOf(
-            Triple("README.md", "A", "README"),
-            Triple("README.md", "d", "md"),
-            Triple("mother-in-law", "i", "in"),
-        ).forEach { (text, hitValue, expected) ->
+            listOf("README.md", "R", "A", "README"),
+            listOf("README.md", "m", "d", "md"),
+            listOf("mother-in-law", "i", "i", "in"),
+        ).forEach { (text, anchorValue, hitValue, expected) ->
             val latin = textPage(text)
+            val (anchorX, anchorY) = elementCenter(latin, anchorValue)
             val (x, y) = elementCenter(latin, hitValue)
-            val selection = ReaderSelectionPolicy.startWord(latin, x, y, Locale.ENGLISH)!!
+            val started = ReaderSelectionPolicy.start(latin, anchorX, anchorY)!!
+            val selection = ReaderSelectionPolicy.moveEndpoint(
+                started, latin, x, y, ReaderSelectionEndpoint.FOCUS, Locale.ENGLISH,
+            )
+
             assertEquals(expected, selection.selectedText(latin))
         }
     }
