@@ -1,6 +1,6 @@
 package io.legado.app.feature.orphanrecovery
 
-import android.content.Context
+import android.content.res.Resources
 import android.text.format.Formatter
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -186,6 +187,7 @@ private fun RecoveryLibrary(
     onOpenLocal: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     if (!state.loaded) {
         if (!state.busy) {
             TextButton(onClick = { send(OrphanRecoveryIntent.Reload) }) { AppText(stringResource(R.string.retry)) }
@@ -234,7 +236,7 @@ private fun RecoveryLibrary(
             }
             itemsIndexed(state.texts, key = { _, item -> item.id.relativePath }) { position, item ->
                 val display = state.editedTitles[item.id]?.takeIf(String::isNotBlank)
-                    ?: item.originalTitle ?: item.suggestedTitle ?: fallbackTitle(context, item, position)
+                    ?: item.originalTitle ?: item.suggestedTitle ?: fallbackTitle(resources, item, position)
                 RecoveryRow(
                     item, display, position, state, send,
                     description = listOfNotNull(
@@ -254,7 +256,7 @@ private fun RecoveryLibrary(
                     send(OrphanRecoveryIntent.Close)
                     onOpenLocal(recovered)
                 } else {
-                    val provisional = state.texts.mapIndexed { i, item -> item.id to fallbackTitle(context, item, i) }.toMap()
+                    val provisional = state.texts.mapIndexed { i, item -> item.id to fallbackTitle(resources, item, i) }.toMap()
                     send(OrphanRecoveryIntent.RecoverLocal(provisional.toImmutableMap()))
                 }
             },
@@ -319,7 +321,8 @@ private fun SourcePreview(state: OrphanRecoveryState, send: (OrphanRecoveryInten
     val item = state.source ?: return
     val preview = state.preview ?: return
     val context = LocalContext.current
-    val displayed = item.originalTitle ?: item.suggestedTitle ?: fallbackTitle(context, item, state.texts.indexOf(item))
+    val resources = LocalResources.current
+    val displayed = item.originalTitle ?: item.suggestedTitle ?: fallbackTitle(resources, item, state.texts.indexOf(item))
     Column {
         SettingItem(
             title = displayed,
@@ -330,15 +333,15 @@ private fun SourcePreview(state: OrphanRecoveryState, send: (OrphanRecoveryInten
                 append('\n')
                 append(item.id.relativePath)
                 if (item.copies.isNotEmpty()) {
-                    append("\n" + context.getString(R.string.feature_orphan_recovery_same_copies, item.copies.size))
+                    append("\n" + resources.getString(R.string.feature_orphan_recovery_same_copies, item.copies.size))
                 }
                 when {
-                    item.hasConflictingTitles -> append("\n" + context.getString(
+                    item.hasConflictingTitles -> append("\n" + resources.getString(
                         R.string.feature_orphan_recovery_conflicting_titles,
                         item.copies.mapNotNull { it.originalTitle }.distinct().joinToString(" / "),
                     ))
-                    item.originalTitle != null -> append("\n" + context.getString(R.string.feature_orphan_recovery_title_verified))
-                    item.suggestedTitle != null -> append("\n" + context.getString(R.string.feature_orphan_recovery_title_suspected))
+                    item.originalTitle != null -> append("\n" + resources.getString(R.string.feature_orphan_recovery_title_verified))
+                    item.suggestedTitle != null -> append("\n" + resources.getString(R.string.feature_orphan_recovery_title_suspected))
                 }
             },
             onClick = null,
@@ -582,6 +585,6 @@ private fun indexLabel(item: OrphanText): String =
     item.index?.let { stringResource(R.string.feature_orphan_recovery_raw_index, it) }
         ?: stringResource(R.string.feature_orphan_recovery_order_unknown)
 
-private fun fallbackTitle(context: Context, item: OrphanText, position: Int): String =
-    item.index?.let { context.getString(R.string.feature_orphan_recovery_index_title, it) }
-        ?: context.getString(R.string.feature_orphan_recovery_unknown_title, position + 1)
+private fun fallbackTitle(resources: Resources, item: OrphanText, position: Int): String =
+    item.index?.let { resources.getString(R.string.feature_orphan_recovery_index_title, it) }
+        ?: resources.getString(R.string.feature_orphan_recovery_unknown_title, position + 1)

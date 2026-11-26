@@ -286,7 +286,21 @@ class ReadBookLoadDelegate(
         }
     }
 
-    /** 重新拉目录。会话侧 `loadChapterList` 回调和 TOC 正则改动都走这里。 */
+    /** 应用目录正则；恢复的 TXT 在目录更新成功前不修改当前书籍对象。 */
+    fun applyTocRegex(tocRegex: String) {
+        val current = ReadBook.book ?: return
+        val book = if (bookRepository.isRecoveredText(current)) current.copy() else current
+        book.tocUrl = tocRegex
+        loadChapterList(book, applyRecoveredTitleRule = true)
+    }
+
+    /** 显示更新提示后重新拉目录。 */
+    fun loadChapterList(book: Book, applyRecoveredTitleRule: Boolean = false) {
+        ReadBook.upMsg(context.getString(R.string.toc_updateing))
+        doLoadChapterList(book, applyRecoveredTitleRule)
+    }
+
+    /** 重新拉目录；目录权限重试直接走这里，不覆盖原有提示。 */
     fun doLoadChapterList(book: Book, applyRecoveredTitleRule: Boolean = false) {
         Coroutine.async(scope, Dispatchers.IO) {
             if (loadChapterListAwait(book, applyRecoveredTitleRule)) {

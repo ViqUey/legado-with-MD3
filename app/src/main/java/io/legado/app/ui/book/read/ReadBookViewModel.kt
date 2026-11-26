@@ -1171,13 +1171,7 @@ class ReadBookViewModel(
                 val book = ReadBook.book
                 _effects.tryEmit(ReadBookEffect.MenuTocRegex(book?.bookUrl ?: "", book?.tocUrl))
             }
-            is ReadBookIntent.TocRegexResult -> {
-                ReadBook.book?.let { current ->
-                    val book = if (bookRepository.isRecoveredText(current)) current.copy() else current
-                    book.tocUrl = intent.tocRegex
-                    loadChapterList(book, applyRecoveredTitleRule = true)
-                }
-            }
+            is ReadBookIntent.TocRegexResult -> loadDelegate.applyTocRegex(intent.tocRegex)
             is ReadBookIntent.MenuRefreshDur -> {
                 ReadBook.book?.let { book ->
                     if (ReadBook.bookSource == null) {
@@ -1763,9 +1757,8 @@ class ReadBookViewModel(
     // 业务状态刷新另有 collectReaderSession() 反应式收集 ReadBook.snapshot 驱动。
     // 下面两个是私有函数而非 override——除了会话事件，VM 自己也在若干处直接调用。
 
-    private fun loadChapterList(book: Book, applyRecoveredTitleRule: Boolean = false) {
-        ReadBook.upMsg(context.getString(R.string.toc_updateing))
-        loadDelegate.doLoadChapterList(book, applyRecoveredTitleRule)
+    private fun loadChapterList(book: Book) {
+        loadDelegate.loadChapterList(book)
     }
 
     private fun sureNewProgress(progress: BookProgress) {
