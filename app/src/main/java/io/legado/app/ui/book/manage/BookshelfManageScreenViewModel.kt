@@ -720,7 +720,8 @@ class BookshelfManageScreenViewModel(
         execute {
             LocalConfig.deleteBookOriginal = deleteOriginal
             deleteBooksUseCase.execute(bookUrls, deleteOriginal)
-        }.onSuccess { deletedBookUrls ->
+        }.onSuccess { result ->
+            val deletedBookUrls = result.deletedBookUrls
             _uiState.update { it.copy(deleteBookOriginal = deleteOriginal) }
             deletedBookUrls.forEach { cacheCounts.remove(it) }
             // 书已经不在书架里了，选中集合不能再留着它的 url（跨分组选中时它可能根本不在当前列表）
@@ -728,7 +729,10 @@ class BookshelfManageScreenViewModel(
             if (remaining.size != _uiState.value.selectedBookUrls.size) {
                 applySelection(remaining)
             }
-            _effects.tryEmit(BookshelfManageScreenEffect.ShowMessage("删除成功"))
+            val message = if (result.failedRecoveredSources > 0) {
+                context.getString(io.legado.app.R.string.feature_orphan_recovery_delete_failed, result.failedRecoveredSources)
+            } else "删除成功"
+            _effects.tryEmit(BookshelfManageScreenEffect.ShowMessage(message))
         }.onError {
             _effects.tryEmit(BookshelfManageScreenEffect.ShowMessage("删除失败\n${it.localizedMessage}"))
         }

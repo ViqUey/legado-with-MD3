@@ -26,6 +26,7 @@ import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.localBook.MarkdownFile
 import io.legado.app.model.localBook.MarkdownImageSource
+import io.legado.app.model.localBook.RecoveredTextFile
 import io.legado.app.model.localBook.TextFile
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
@@ -305,6 +306,9 @@ object BookHelp {
         }
     }
 
+    internal fun canWriteLocalTxtSource(book: Book): Boolean =
+        book.isLocalTxt && RecoveredTextFile.fileOf(book) == null
+
     fun saveText(
         book: Book,
         bookChapter: BookChapter,
@@ -314,7 +318,7 @@ object BookHelp {
         notifyContentChange: Boolean = true,
     ) {
         if (content.isEmpty()) return
-        if (book.isLocalTxt && saveToSource) {
+        if (saveToSource && canWriteLocalTxtSource(book)) {
             try {
                 saveToLocalTxt(book, bookChapter, content)
                 TextFile.clear()
@@ -324,7 +328,9 @@ object BookHelp {
         }
         // 保存阅读缓存文本(.nb)
         val file = getChapterContentFile(book, bookChapter)
-        if (book.isEpub || book.isMobi) {
+        if (RecoveredTextFile.fileOf(book) != null) {
+            synchronized(localRubyCacheLock) { FileUtils.writeTextAtomic(file.path, content) }
+        } else if (book.isEpub || book.isMobi) {
             synchronized(localRubyCacheLock) {
                 writeCheckedRubyCache(file, content)
             }
@@ -791,7 +797,41 @@ object BookHelp {
         book: Book,
         bookChapter: BookChapter,
         suffix: String = "nb",
-    ): File = File(getChapterContentDir(book, bookChapter), bookChapter.getFileName(suffix))
+    ): File {
+        if (suffix == "nb" && RecoveredTextFile.fileOf(book) != null) {
+            // Recovered TXT section offsets and URL survive a title-only change.
+            val identity = "${bookChapter.url}:${bookChapter.start}:${bookChapter.end}"
+            val subject = "recovered-edit-${bookChapter.index}-${MD5Utils.md5Encode16(identity)}"
+            return File(downloadDir.getFile(cacheFolderName, book.getFolderName(), subject), "$subject.nb")
+        }
+        return titleKeyedChapterFile(book, bookChapter, suffix)
+    }
+
+    private fun titleKeyedChapterFile(book: Book, chapter: BookChapter, suffix: String = "nb") =
+        File(getChapterContentDir(book, chapter), chapter.getFileName(suffix))
+
+    /** Move a legacy edit before its database title changes. Both titles can read the stable path. */
+    internal fun preserveRecoveredTextEdit(book: Book, chapter: BookChapter) {
+        if (RecoveredTextFile.fileOf(book) == null) return
+        synchronized(localRubyCacheLock) {
+            val stable = getChapterContentFile(book, chapter)
+            if (stable.isFile && stable.length() > 0) return
+            val old = recoveredLegacyEdit(book, chapter) ?: return
+            val parent = checkNotNull(stable.parentFile)
+            if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) {
+                throw java.io.IOException("Cannot create recovered chapter edit directory")
+            }
+            java.nio.file.Files.move(
+                old.toPath(), stable.toPath(),
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+    }
+
+    private fun recoveredLegacyEdit(book: Book, chapter: BookChapter): File? =
+        titleKeyedChapterFile(book, chapter).takeIf { it.isFile && it.length() > 0 }
+            ?: legacyChapterContentFile(book, chapter).takeIf { it.isFile && it.length() > 0 }
 
     private fun legacyChapterContentFile(book: Book, chapter: BookChapter, suffix: String = "nb") =
         File(downloadDir.getFile(cacheFolderName, book.getFolderName()), chapter.getFileName(suffix))
@@ -806,7 +846,9 @@ object BookHelp {
     /** 新缓存优先；历史缓存保留原位，避免升级时搬动仍在读取的文件。 */
     private fun cachedChapterContentFile(book: Book, chapter: BookChapter, suffix: String = "nb"): File =
         getChapterContentFile(book, chapter, suffix).let { current ->
-            if (current.isFile) current else legacyChapterContentFile(book, chapter, suffix)
+            if (suffix == "nb" && RecoveredTextFile.fileOf(book) != null) {
+                if (current.isFile && current.length() > 0) current else recoveredLegacyEdit(book, chapter) ?: current
+            } else if (current.isFile) current else legacyChapterContentFile(book, chapter, suffix)
         }
 
     /** 文本渲染/图片查看/Web 等旧调用方只有 URL，也必须能复用章节下载的原图。 */
@@ -1184,6 +1226,7 @@ object BookHelp {
             rubyCacheStamp(legacyFile).delete()
             file.delete()
             legacyFile.delete()
+            if (RecoveredTextFile.fileOf(book) != null) titleKeyedChapterFile(book, bookChapter).delete()
             // 章节目录里可能还有图片，非空时 delete 会失败，不会误删。
             file.parentFile?.delete()
         }

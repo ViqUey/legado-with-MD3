@@ -8,6 +8,7 @@ import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.exception.EmptyFileException
 import io.legado.app.help.DefaultData
+import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isLocalModified
 import io.legado.app.help.book.upKind
 import io.legado.app.utils.EncodingDetect
@@ -41,8 +42,8 @@ class TextFile(private var book: Book) {
         }
 
         @Throws(FileNotFoundException::class)
-        fun getChapterList(book: Book): ArrayList<BookChapter> {
-            return getTextFile(book).getChapterList()
+        fun getChapterList(book: Book, applyRecoveredTitleRule: Boolean = false): ArrayList<BookChapter> {
+            return getTextFile(book).getChapterList(applyRecoveredTitleRule)
         }
 
         @Synchronized
@@ -79,7 +80,17 @@ class TextFile(private var book: Book) {
      * 获取目录
      */
     @Throws(FileNotFoundException::class, SecurityException::class, EmptyFileException::class)
-    fun getChapterList(): ArrayList<BookChapter> {
+    fun getChapterList(applyRecoveredTitleRule: Boolean = false): ArrayList<BookChapter> {
+        RecoveredTextFile.fileOf(book)?.let { file ->
+            book.charset = Charsets.UTF_8.name()
+            val pattern = if (applyRecoveredTitleRule && book.tocUrl.isNotBlank()) {
+                Regex(book.tocUrl, RegexOption.MULTILINE)
+            } else null
+            return RecoveredTextFile.rebuild(
+                book, file, appDb.bookChapterDao.getChapterList(book.bookUrl), pattern,
+                beforeTitleChange = { BookHelp.preserveRecoveredTextEdit(book, it) },
+            )
+        }
         refreshCharset()
         val modified = book.isLocalModified()
         if (book.charset == null || book.tocUrl.isBlank() || modified) {
@@ -116,6 +127,7 @@ class TextFile(private var book: Book) {
     }
 
     fun getContent(chapter: BookChapter): String {
+        RecoveredTextFile.fileOf(book)?.let { return RecoveredTextFile.content(it, chapter) }
         refreshCharset()
         val start = chapter.start!!
         val end = chapter.end!!

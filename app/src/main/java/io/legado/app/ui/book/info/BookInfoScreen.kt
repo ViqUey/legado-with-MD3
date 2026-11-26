@@ -565,6 +565,7 @@ private fun BookInfoScreenContent(
             book = state.book?.toConflictSummary(),
             copies = state.shelfDuplicates,
             isLocal = state.book?.isLocal == true,
+            isRecoveredText = state.book?.isRecoveredText == true,
             initialDeleteOriginal = state.deleteOriginal,
             onOpenCopy = { onIntent(BookInfoIntent.OpenShelfDuplicate(it)) },
             onDelete = { onIntent(BookInfoIntent.ShelfDeleteConfirm(it)) },
@@ -1069,6 +1070,16 @@ private fun BookInfoOverflowAction(
                             label = stringResource(R.string.clear_cache),
                         )
                     )
+                    if (book != null && !book.isLocal && book.type and BookType.text > 0 &&
+                        !state.bookPrivate && !state.privateLocked
+                    ) {
+                        add(
+                            AppAction(
+                                id = "$MENU_PREFIX${BookInfoMenuAction.CacheRecovery.name}",
+                                label = stringResource(R.string.feature_orphan_recovery_book_menu),
+                            )
+                        )
+                    }
                     add(
                         AppAction(
                             id = "$MENU_PREFIX${BookInfoMenuAction.ShowLog.name}",

@@ -156,6 +156,7 @@ class ReadBookViewModel(
     private val bookRepository: BookRepository,
     private val readRecordRepository: ReadRecordRepository,
     private val readerSession: ReaderSession,
+    orphanRecoveryGateway: io.legado.app.domain.gateway.OrphanCacheRecoveryGateway,
 ) : BaseViewModel(application) {
     // --- MVI State ---
 
@@ -444,6 +445,7 @@ class ReadBookViewModel(
 
     private val loadDelegate: ReadBookLoadDelegate = ReadBookLoadDelegate(
         context = context,
+        orphanRecoveryGateway = orphanRecoveryGateway,
         scope = viewModelScope,
         host = object : ReadBookLoadDelegate.Host {
             override var justInitData: Boolean
@@ -1170,9 +1172,10 @@ class ReadBookViewModel(
                 _effects.tryEmit(ReadBookEffect.MenuTocRegex(book?.bookUrl ?: "", book?.tocUrl))
             }
             is ReadBookIntent.TocRegexResult -> {
-                ReadBook.book?.let {
-                    it.tocUrl = intent.tocRegex
-                    loadChapterList(it)
+                ReadBook.book?.let { current ->
+                    val book = if (bookRepository.isRecoveredText(current)) current.copy() else current
+                    book.tocUrl = intent.tocRegex
+                    loadChapterList(book, applyRecoveredTitleRule = true)
                 }
             }
             is ReadBookIntent.MenuRefreshDur -> {
@@ -1760,9 +1763,9 @@ class ReadBookViewModel(
     // 业务状态刷新另有 collectReaderSession() 反应式收集 ReadBook.snapshot 驱动。
     // 下面两个是私有函数而非 override——除了会话事件，VM 自己也在若干处直接调用。
 
-    private fun loadChapterList(book: Book) {
+    private fun loadChapterList(book: Book, applyRecoveredTitleRule: Boolean = false) {
         ReadBook.upMsg(context.getString(R.string.toc_updateing))
-        loadDelegate.doLoadChapterList(book)
+        loadDelegate.doLoadChapterList(book, applyRecoveredTitleRule)
     }
 
     private fun sureNewProgress(progress: BookProgress) {

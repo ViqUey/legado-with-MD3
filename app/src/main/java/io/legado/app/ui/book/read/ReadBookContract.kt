@@ -587,6 +587,8 @@ data class ReadBookInitRequest(
     val chapterChanged: Boolean = false,
     val chapterIndex: Int = -1,
     val chapterPos: Int = -1,
+    val recoveredChapter: io.legado.app.domain.model.RecoveryTarget? = null,
+    val recoveredDigest: String? = null,
 )
 
 /**

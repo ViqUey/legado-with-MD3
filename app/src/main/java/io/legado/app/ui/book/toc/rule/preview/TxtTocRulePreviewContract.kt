@@ -9,6 +9,7 @@ import kotlinx.collections.immutable.toImmutableList
 @Stable
 data class TxtTocRulePreviewUiState(
     val loading: Boolean = true,
+    val recoveredTitlesOnly: Boolean = false,
     val rules: ImmutableList<TocRulePreviewItem> = persistentListOf(),
     val currentRule: String = "",
     val selectedRule: String = "",

@@ -102,6 +102,7 @@ data class BookInfoBookUi(
     val durChapterPos: Int,
     val remark: String?,
     val intro: String?,
+    val isRecoveredText: Boolean = false,
 ) {
     fun toConflictSummary(): ConflictBookSummary = ConflictBookSummary(
         bookUrl = bookUrl,
@@ -307,6 +308,7 @@ sealed interface BookInfoEffect {
 
     data class OpenBookInfoEdit(val bookUrl: String) : BookInfoEffect
     data class OpenToc(val bookUrl: String) : BookInfoEffect
+    data class OpenCacheRecovery(val bookUrl: String) : BookInfoEffect
     data class OpenReader(
         val book: Book,
         val inBookshelf: Boolean,
@@ -392,6 +394,7 @@ enum class BookInfoMenuAction {
     ToggleSplitLongChapter,
     ToggleDeleteAlert,
     ClearCache,
+    CacheRecovery,
     ShowLog,
     TogglePrivate,
 }

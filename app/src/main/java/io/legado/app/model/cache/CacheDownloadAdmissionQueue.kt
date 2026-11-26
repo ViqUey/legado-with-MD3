@@ -11,6 +11,8 @@ class CacheDownloadAdmissionQueue(
 
     fun isEmpty(): Boolean = requests.isEmpty()
 
+    internal fun containsBook(bookUrl: String): Boolean = requests.any { it.bookUrl == bookUrl }
+
     fun shouldQueue(request: CacheDownloadRequest, activeBookUrls: Set<String>): Boolean {
         return request.bookUrl !in activeBookUrls && activeBookUrls.size >= maxActiveBooks
     }

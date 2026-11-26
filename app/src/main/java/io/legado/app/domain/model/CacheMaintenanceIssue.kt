@@ -16,6 +16,7 @@ data class OrphanedChapterGroup(
     val bookName: String,
     val entryNames: List<String>,
     val bytes: Long,
+    val recoverySupported: Boolean = false,
 )
 
 /**

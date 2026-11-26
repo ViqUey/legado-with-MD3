@@ -392,7 +392,35 @@ object WebBook {
         }
     }
 
+    // Counts actual calls through cancellation/finally, independently of the download UI.
+    private val activeContentRequests = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    internal fun isRequestingContent(bookUrl: String): Boolean =
+        activeContentRequests.containsKey(bookUrl)
+
     suspend fun getContentAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter,
+        nextChapterUrl: String? = null,
+        needSave: Boolean = true,
+    ): String = trackContentRequest(book.bookUrl) {
+        // Even needSave=false may update a chapter title in BookContent.
+        fetchContent(bookSource, book, bookChapter, nextChapterUrl, needSave)
+    }
+
+    internal suspend fun <T> trackContentRequest(bookUrl: String, request: suspend () -> T): T {
+        activeContentRequests.merge(bookUrl, 1, Int::plus)
+        try {
+            return request()
+        } finally {
+            activeContentRequests.computeIfPresent(bookUrl) { _, count ->
+                (count - 1).takeIf { it > 0 }
+            }
+        }
+    }
+
+    private suspend fun fetchContent(
         bookSource: BookSource,
         book: Book,
         bookChapter: BookChapter,

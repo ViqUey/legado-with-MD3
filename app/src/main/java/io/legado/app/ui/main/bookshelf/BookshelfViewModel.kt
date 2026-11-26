@@ -1200,9 +1200,12 @@ class BookshelfViewModel(
         if (bookUrls.isEmpty()) return
         execute {
             deleteBooksUseCase.execute(bookUrls, deleteOriginal)
-        }.onSuccess { deletedBookUrls ->
+        }.onSuccess { result ->
+            if (result.failedRecoveredSources > 0) {
+                showMessage(context.getString(R.string.feature_orphan_recovery_delete_failed, result.failedRecoveredSources))
+            }
             // 已经删掉的书不能继续留在选中集合里，否则下一次批量操作会带上幽灵 url
-            val remaining = selectedBookUrlsFlow.value - deletedBookUrls.toSet()
+            val remaining = selectedBookUrlsFlow.value - result.deletedBookUrls
             if (remaining.size != selectedBookUrlsFlow.value.size) {
                 selectedBookUrlsFlow.value = remaining
             }

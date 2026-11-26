@@ -85,6 +85,8 @@ class ReadContentEditDelegate(
                 chapterTitle = "",
                 cursorOffset = 0,
                 loading = false,
+                isLocalTxt = false,
+                canWriteToSource = false,
                 saveToSource = false,
             )
         }
@@ -116,7 +118,7 @@ class ReadContentEditDelegate(
     }
 
     fun setSaveToSource(value: Boolean) {
-        _uiState.update { it.copy(saveToSource = value) }
+        _uiState.update { it.copy(saveToSource = value && it.canWriteToSource) }
     }
 
     fun load() {
@@ -129,10 +131,13 @@ class ReadContentEditDelegate(
             val rawContent = BookHelp.getContent(book, chapter) ?: return@async
             val text = contentProcessor.getContent(book, chapter, rawContent, includeTitle = false)
                 .toString()
+            val canWriteToSource = BookHelp.canWriteLocalTxtSource(book)
             _uiState.update {
                 it.copy(
                     chapterTitle = chapter.title,
                     isLocalTxt = book.isLocalTxt,
+                    canWriteToSource = canWriteToSource,
+                    saveToSource = it.saveToSource && canWriteToSource,
                 )
             }
             adopt(text)
@@ -154,6 +159,7 @@ class ReadContentEditDelegate(
             val title = chapterTitle.trim()
             if (title.isNotEmpty() && title != chapter.title) {
                 // 章名先写：本地 TXT 的写回（saveText → saveToLocalTxt）用 chapter.title 当段首标题
+                BookHelp.preserveRecoveredTextEdit(book, chapter)
                 BookHelp.saveChapterTitle(chapter, title)
             }
             BookHelp.saveText(book, chapter, text, saveToSource)

@@ -52,6 +52,7 @@ import io.legado.app.model.ReadBook.renderCallBack
 import io.legado.app.model.ReadBook.snapshot
 import io.legado.app.model.cache.CACHE_DOWNLOAD_RETRY_LIMIT
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.RecoveredTextFile
 import io.legado.app.model.localBook.MarkdownFile
 import io.legado.app.model.localBook.TextFile
 import io.legado.app.model.reader.ReaderChapterInput
@@ -142,6 +143,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     @Volatile
     var book: Book? = null
         private set
+    @Volatile
     var callBack: CallBack? = null
 
     /**
@@ -804,6 +806,16 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         }
     }
 
+    // The callback is attached for the ViewModel lifetime, including reader child pages.
+    // Attachment is a UI presence signal. Requests can outlive detachment.
+    internal fun hasAttachedReader(bookUrl: String): Boolean =
+        callBack != null && book?.bookUrl == bookUrl
+
+    @Synchronized
+    internal fun onRecoveredChapterPublished(bookUrl: String) {
+        if (book?.bookUrl == bookUrl) clearTextChapter()
+    }
+
     @Synchronized
     fun clearTextChapter() {
         clearExpiredChapterLoadingJob(true)
@@ -1447,9 +1459,47 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         loadContent(currentIndex, resetPageOffset = resetPageOffset,
             preserveReadAloudPosition = preserveReadAloudPosition) {
             success?.invoke()
-            if (prefetchNextChapterEnabled) loadContent(currentIndex + 1, resetPageOffset = resetPageOffset)
-            if (prefetchPrevChapterEnabled) loadContent(currentIndex - 1, resetPageOffset = resetPageOffset)
+            prefetchInitialNeighbors(currentIndex) { loadContent(it, resetPageOffset = resetPageOffset) }
         }
+    }
+
+    internal suspend fun loadRecoveredInitialContent(
+        book: Book,
+        chapter: BookChapter,
+        content: String,
+        success: () -> Unit,
+    ) {
+        val owner = callBack
+        val center = chapter.index
+        fun stillCurrent() = owner != null && callBack === owner &&
+            ReadBook.book === book && durChapterIndex == center
+
+        withContext(Main) {
+            if (!stillCurrent()) return@withContext
+            // An observer already attached at this index could otherwise replace the verified first view.
+            translationObserverJobs.remove(center)?.cancel()
+            contentLoadFinish(
+                book, chapter, content,
+                resetPageOffset = true,
+                preserveReadAloudPosition = isCurrentBookReadAloud,
+            ) {
+                if (!stillCurrent()) return@contentLoadFinish
+                success()
+                prefetchInitialNeighbors(center) { index ->
+                    if (stillCurrent() && readerChapterInputFor(index) == null) {
+                        loadChapterContent(
+                            index, upContent = true, resetPageOffset = true,
+                            preserveReadAloudPosition = false, success = null, stillCurrent = ::stillCurrent,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private inline fun prefetchInitialNeighbors(currentIndex: Int, load: (Int) -> Unit) {
+        if (prefetchNextChapterEnabled) load(currentIndex + 1)
+        if (prefetchPrevChapterEnabled) load(currentIndex - 1)
     }
 
     fun relayoutContent() {
@@ -1494,19 +1544,41 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         resetPageOffset: Boolean = false,
         preserveReadAloudPosition: Boolean = false,
         success: (() -> Unit)? = null
+    ) = loadChapterContent(index, upContent, resetPageOffset, preserveReadAloudPosition, success)
+
+    private fun loadChapterContent(
+        index: Int,
+        upContent: Boolean,
+        resetPageOffset: Boolean,
+        preserveReadAloudPosition: Boolean,
+        success: (() -> Unit)?,
+        stillCurrent: (() -> Boolean)? = null,
     ) {
+        var loadingBook: Book? = null
         Coroutine.async {
-            val book = book!!
+            val openingBook = book
+            if (stillCurrent?.invoke() == false) return@async
+            val book = openingBook!!
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index) ?: run {
-                if (index == durChapterIndex) {
+                if (stillCurrent == null && index == durChapterIndex) {
                     upMsg("章节不存在")
                 }
                 return@async
             }
+            if (stillCurrent != null &&
+                (!stillCurrent() || readerChapterInputFor(index) != null)) return@async
             if (addLoading(index)) {
+                if (stillCurrent != null) loadingBook = book
+                fun prefetchExpired(): Boolean {
+                    if (stillCurrent?.invoke() != false) return false
+                    if (ReadBook.book === book) removeLoading(index)
+                    return true
+                }
+
                 val content = if (book.getTranslationMode()) {
                     TranslationManager.getCachedTranslation(book, chapter)
                         ?: run {
+                            if (prefetchExpired()) return@async
                             TranslationManager.startTranslation(book, chapter)?.let { taskFlow ->
                                 startTranslationObserver(taskFlow, book, chapter)
                             }
@@ -1515,6 +1587,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 } else {
                     BookHelp.getContent(book, chapter)
                 }
+                if (prefetchExpired()) return@async
                 content?.let {
                     contentLoadFinish(
                         book,
@@ -1533,6 +1606,10 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 )
             }
         }.onError {
+            if (stillCurrent?.invoke() == false) {
+                if (loadingBook != null && book === loadingBook) removeLoading(index)
+                return@onError
+            }
             removeLoading(index)
             if (index == durChapterIndex) {
                 upMsg("加载正文出错\n${it.localizedMessage}")
@@ -2072,7 +2149,8 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     }
 
     fun onChapterListUpdated(newBook: Book) {
-        if (newBook.isSameNameAuthor(book)) {
+        val recovered = RecoveredTextFile.fileOf(newBook) != null
+        if (if (recovered) book?.bookUrl == newBook.bookUrl else newBook.isSameNameAuthor(book)) {
             // 本地 TXT 改目录规则后，旧目录中的章节序号已经不再能表示同一段正文。
             // 在替换目录前保留当前章节的文件偏移，随后在新目录中重新定位，避免目录
             // 已更新而阅读页仍显示旧章节标题和序号。
@@ -2080,7 +2158,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             book = newBook
             chapterSize = newBook.totalChapterNum
             simulatedChapterSize = newBook.simulatedTotalChapterNum()
-            if (newBook.isLocalTxt && currentChapterStart != null) {
+            if (newBook.isLocalTxt && currentChapterStart != null && !recovered) {
                 val chapters = appDb.bookChapterDao.getChapterList(newBook.bookUrl)
                 val matchedIndex = chapters.indexOfFirst { chapter ->
                     val start = chapter.start

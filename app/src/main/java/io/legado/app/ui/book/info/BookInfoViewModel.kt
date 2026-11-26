@@ -55,6 +55,7 @@ import io.legado.app.help.book.addType
 import io.legado.app.help.book.getDisplayTagList
 import io.legado.app.help.book.getExportFileName
 import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.isOnLineTxt
 import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.isWebFile
@@ -1104,14 +1105,18 @@ class BookInfoViewModel(
     fun delBook(deleteOriginal: Boolean = false, success: (() -> Unit)? = null) {
         val book = currentBook ?: return
         execute {
-            inBookshelf = false
-            invalidateShelfDuplicates()
             if (book.isLocal) {
                 LocalBook.deleteBook(book, deleteOriginal)
             }
             book.delete()
+            inBookshelf = false
+            invalidateShelfDuplicates()
         }.onSuccess {
             success?.invoke()
+        }.onError {
+            if (it is io.legado.app.domain.model.RecoveredSourceDeletionException) {
+                showMessage(context.getString(R.string.feature_orphan_recovery_delete_failed, 1))
+            }
         }
     }
 
@@ -1488,8 +1493,10 @@ class BookInfoViewModel(
     }
     private fun deleteBook(deleteOriginal: Boolean) {
         currentBook?.let { book ->
-            LocalConfig.deleteBookOriginal = deleteOriginal
-            _screenState.update { it.copy(deleteOriginal = deleteOriginal) }
+            if (!bookRepository.isRecoveredText(book)) {
+                LocalConfig.deleteBookOriginal = deleteOriginal
+                _screenState.update { it.copy(deleteOriginal = deleteOriginal) }
+            }
             SourceCallBack.callBackBook(SourceCallBack.DEL_BOOK_SHELF, bookSource, book)
             delBook(deleteOriginal) {
                 emitEffect(BookInfoEffect.Finish(resultCode = RESULT_OK))
@@ -1626,6 +1633,11 @@ class BookInfoViewModel(
                 )
             )
 
+            BookInfoMenuAction.CacheRecovery -> {
+                if (book.isOnLineTxt && !bookPrivateFlow.value) {
+                    emitEffect(BookInfoEffect.OpenCacheRecovery(book.bookUrl))
+                }
+            }
             BookInfoMenuAction.ShowLog -> showAppLog()
             BookInfoMenuAction.TogglePrivate -> toggleBookPrivate()
         }
@@ -2091,6 +2103,7 @@ class BookInfoViewModel(
     private fun Book.toBookInfoBookUi(): BookInfoBookUi {
         return BookInfoBookUi(
             bookUrl = bookUrl,
+            isRecoveredText = bookRepository.isRecoveredText(this),
             name = name,
             author = author,
             realAuthor = getRealAuthor(),

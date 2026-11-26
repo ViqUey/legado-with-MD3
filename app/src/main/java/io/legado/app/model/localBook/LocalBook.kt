@@ -137,7 +137,7 @@ object LocalBook {
     }
 
     @Throws(TocEmptyException::class)
-    fun getChapterList(book: Book): ArrayList<BookChapter> {
+    fun getChapterList(book: Book, applyRecoveredTitleRule: Boolean = false): ArrayList<BookChapter> {
         if (book.isLocalManga) {
             // 目录重建同样是一次书本初始化：历史导入的 CBZ 在这里补生成封面。
             LocalMangaFiles.upBookCover(book)
@@ -166,7 +166,7 @@ object LocalBook {
             }
 
             else -> {
-                TextFile.getChapterList(book)
+                TextFile.getChapterList(book, applyRecoveredTitleRule)
             }
         }
         if (chapters.isEmpty()) {
@@ -539,12 +539,15 @@ object LocalBook {
     }
 
     fun deleteBook(book: Book, deleteOriginal: Boolean) {
+        // Strict result only for managed TXT files. Let callers keep the shelf
+        // record if the explicitly requested source deletion fails.
+        val deletedManagedSource = deleteOriginal && RecoveredTextFile.deleteSource(book)
         kotlin.runCatching {
             BookHelp.clearCache(book)
             if (!book.coverUrl.isNullOrEmpty()) {
                 FileUtils.delete(book.coverUrl!!)
             }
-            if (deleteOriginal) {
+            if (deleteOriginal && !deletedManagedSource) {
                 if (book.bookUrl.isContentScheme()) {
                     val uri = book.bookUrl.toUri()
                     DocumentFile.fromSingleUri(appCtx, uri)?.delete()

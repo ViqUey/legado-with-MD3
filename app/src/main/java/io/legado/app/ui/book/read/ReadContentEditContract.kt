@@ -18,5 +18,6 @@ data class ContentEditUiState(
     val bodyOnly: Boolean = false,
     val cursorOffset: Int = 0,
     val isLocalTxt: Boolean = false,
+    val canWriteToSource: Boolean = false,
     val saveToSource: Boolean = false,
 )

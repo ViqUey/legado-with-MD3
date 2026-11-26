@@ -61,6 +61,19 @@ interface BookChapterDao {
     @Update
     fun update(vararg bookChapter: BookChapter)
 
+    @Query("""
+        UPDATE chapters SET title = :newTitle
+        WHERE bookUrl = :bookUrl AND url = :chapterUrl AND `index` = :index
+          AND title = :oldTitle AND isVolume = 0
+    """)
+    fun renameRecoveredChapter(
+        bookUrl: String,
+        chapterUrl: String,
+        index: Int,
+        oldTitle: String,
+        newTitle: String,
+    ): Int
+
     @Query("delete from chapters where bookUrl = :bookUrl")
     fun delByBook(bookUrl: String)
 

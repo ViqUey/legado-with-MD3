@@ -71,6 +71,7 @@ class BookCacheMaintenanceRepository(
                 bookName = book.name,
                 entryNames = orphans.map { it.name },
                 bytes = orphans.sumOf(::lengthOf),
+                recoverySupported = book.isOnLineTxt,
             )
         }
         // UiState 标了 @Stable，渲染边界不能持有可变集合实例。
@@ -372,7 +373,7 @@ class BookCacheMaintenanceRepository(
      * [legalSubjects] 由调用方批量预加载；章节表读取失败时它是空集，此时不产出任何孤儿，
      * 避免把「查不到章节列表」误判成「所有缓存都是孤儿」。
      */
-    private fun collectOrphanEntries(
+    internal fun collectOrphanEntries(
         folderName: String,
         legalSubjects: Set<String>,
     ): List<File>? {

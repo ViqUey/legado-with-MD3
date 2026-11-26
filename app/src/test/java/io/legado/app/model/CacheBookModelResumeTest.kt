@@ -3,10 +3,13 @@ package io.legado.app.model
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
+import io.legado.app.model.cache.CacheDownloadActivity
 import io.legado.app.model.cache.CacheDownloadRequest
 import io.legado.app.model.cache.CacheDownloadSource
 import io.legado.app.model.cache.CacheDownloadStateStore
 import io.legado.app.model.cache.ChapterSelection
+import kotlinx.coroutines.CoroutineScope
+import kotlin.coroutines.EmptyCoroutineContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -175,6 +178,27 @@ class CacheBookModelResumeTest {
         assertTrue(model.hasLaunchableChapters())
     }
 
+    @Test
+    fun recoverySeesDispatchedChapterBeforeAnyDownloadJobExists() {
+        val host = FakeHost()
+        val model = newModel(host)
+        val interrupted = IllegalStateException("interrupt before the chapter lookup")
+        var duringDispatch: CacheDownloadActivity? = null
+        model.addRequest(CacheDownloadRequest(BOOK_URL, ChapterSelection.Single(3)))
+        host.onDownloading = { indices ->
+            if (3 in indices) {
+                duringDispatch = model.recoveryActivity(globallyPaused = false)
+                throw interrupted
+            }
+        }
+
+        val result = runCatching { model.download(CoroutineScope(EmptyCoroutineContext), EmptyCoroutineContext) }
+
+        assertEquals(interrupted, result.exceptionOrNull())
+        assertEquals(CacheDownloadActivity.Running, duringDispatch)
+        assertEquals(null, model.recoveryActivity(globallyPaused = false))
+    }
+
     private fun newModel(
         host: FakeHost = FakeHost(),
         bookUrl: String = BOOK_URL,
@@ -195,7 +219,11 @@ class CacheBookModelResumeTest {
         override fun onTaskQueuesChanged(bookUrl: String) = Unit
         override fun onTaskRemoved(bookUrl: String, clearState: Boolean) = Unit
         override fun onExplicitBookQueued(bookUrl: String) = Unit
-        override fun emitDownloadingIndices(bookUrl: String, indices: Set<Int>) = Unit
+        var onDownloading: ((Set<Int>) -> Unit)? = null
+
+        override fun emitDownloadingIndices(bookUrl: String, indices: Set<Int>) {
+            onDownloading?.invoke(indices)
+        }
         override fun emitDownloadError(bookUrl: String, indices: Set<Int>) = Unit
         override fun emitChapterCached(chapter: BookChapter) = Unit
         override fun errorIndices(bookUrl: String): Set<Int> = emptySet()

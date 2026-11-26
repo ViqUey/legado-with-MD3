@@ -112,6 +112,7 @@ class TxtTocRulePreviewViewModel(
         _uiState.update {
             it.copy(
                 loading = false,
+                recoveredTitlesOnly = book?.let(bookRepository::isRecoveredText) == true,
                 rules = previewItems.toImmutableList(),
                 currentRule = currentRule,
                 selectedRule = currentRule,
@@ -150,7 +151,10 @@ class TxtTocRulePreviewViewModel(
             } catch (e: PatternSyntaxException) {
                 return TocRulePreviewItem(rule = tocRule, totalCount = 0)
             }
-            val (chapters, total) = analyzeWithPattern(book, pattern)
+            val recovered = bookRepository.previewRecoveredTextTitles(book, pattern)
+            val (chapters, total) = if (recovered != null) {
+                recovered.titles.take(500) to recovered.matches
+            } else analyzeWithPattern(book, pattern)
             TocRulePreviewItem(
                 rule = tocRule,
                 chapterCount = chapters.size,

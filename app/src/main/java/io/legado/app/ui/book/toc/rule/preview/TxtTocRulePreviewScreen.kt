@@ -214,6 +214,12 @@ fun TxtTocRulePreviewScreen(
                     )
                 },
                 bottomContent = {
+                    if (state.recoveredTitlesOnly) {
+                        AppText(
+                            text = stringResource(R.string.feature_orphan_recovery_toc_titles_only),
+                            modifier = Modifier.adaptiveHorizontalPadding(),
+                        )
+                    }
                     AnimatedVisibility(
                         modifier = Modifier.adaptiveHorizontalPadding(),
                         visible = alwaysShowSearch || state.showSearch,

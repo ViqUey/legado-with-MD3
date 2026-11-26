@@ -51,13 +51,16 @@ fun ShelfDeleteSheet(
     book: ConflictBookSummary?,
     copies: List<ConflictBookSummary>,
     isLocal: Boolean,
+    isRecoveredText: Boolean = false,
     initialDeleteOriginal: Boolean,
     onOpenCopy: (ConflictBookSummary) -> Unit,
     onDelete: (deleteOriginal: Boolean) -> Unit,
     onDismissRequest: () -> Unit,
 ) {
     // 纯展示态：每次打开 Sheet 都从设置里的当前值起步，退出组合后随之丢弃。
-    var deleteOriginal by rememberSaveable { mutableStateOf(initialDeleteOriginal) }
+    var deleteOriginal by rememberSaveable(book?.bookUrl, isRecoveredText) {
+        mutableStateOf(isRecoveredText || initialDeleteOriginal)
+    }
     var showCopiesList by rememberSaveable { mutableStateOf(false) }
 
     AppModalBottomSheet(
@@ -165,8 +168,14 @@ fun ShelfDeleteSheet(
                     ),
                 )
                 AppText(
-                    text = stringResource(R.string.delete_book_file),
+                    text = stringResource(if (isRecoveredText) R.string.feature_orphan_recovery_delete_source else R.string.delete_book_file),
                     style = LegadoTheme.typography.bodyMedium,
+                )
+            }
+            if (isRecoveredText && !deleteOriginal) {
+                AppText(
+                    text = stringResource(R.string.feature_orphan_recovery_keep_source_warning),
+                    style = LegadoTheme.typography.bodySmall,
                 )
             }
         }

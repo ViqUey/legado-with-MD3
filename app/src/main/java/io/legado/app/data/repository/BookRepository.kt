@@ -9,7 +9,9 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.ShelfBookSummary
 import io.legado.app.ui.main.bookshelf.BookShelfItem
+import io.legado.app.model.localBook.RecoveredTextFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
@@ -145,6 +147,27 @@ class BookRepository(
             bookChapterDao.getChapter(bookUrl, index)
         }
     }
+
+    fun isRecoveredText(book: Book): Boolean = RecoveredTextFile.fileOf(book) != null
+
+    data class RecoveredTitlesPreview(val titles: List<String>, val matches: Int, val changed: Int)
+
+    suspend fun previewRecoveredTextTitles(book: Book, pattern: Regex): RecoveredTitlesPreview? =
+        withContext(Dispatchers.IO) {
+            val file = RecoveredTextFile.fileOf(book) ?: return@withContext null
+            val job = kotlin.coroutines.coroutineContext
+            var matches = 0
+            var changed = 0
+            val titles = RecoveredTextFile.rebuild(
+                book, file, bookChapterDao.getChapterList(book.bookUrl), pattern,
+                onTitleMatch = {
+                    matches++
+                    if (it) changed++
+                },
+                check = { job.ensureActive() },
+            ).map(BookChapter::title)
+            RecoveredTitlesPreview(titles, matches, changed)
+        }
 
     suspend fun getChapterCount(bookUrl: String): Int {
         return withContext(Dispatchers.IO) {

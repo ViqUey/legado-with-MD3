@@ -1354,6 +1354,9 @@ interface BookDao {
     // 私密判定取并集：books.isPrivate = 1（单本标记）∪ 所属私密分组。
     // 分组那一半由 PRIVATE_GROUP_MASK 在内存侧按位与得出，避免改动上面十几处投影。
 
+    @Query("SELECT bookUrl FROM books WHERE isPrivate = 1 OR (`group` & $PRIVATE_GROUP_MASK) <> 0")
+    fun flowPrivacyProtectedBookUrls(): Flow<List<String>>
+
     @Query("SELECT bookUrl FROM books WHERE isPrivate = 1")
     fun flowPrivateBookUrls(): Flow<List<String>>
 

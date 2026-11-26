@@ -11,12 +11,14 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.cache.CACHE_DOWNLOAD_RETRY_LIMIT
 import io.legado.app.model.cache.CacheChapterProgress
 import io.legado.app.model.cache.CacheChapterProgressPhase
+import io.legado.app.model.cache.CacheDownloadActivity
 import io.legado.app.model.cache.CacheDownloadCandidate
 import io.legado.app.model.cache.CacheDownloadQueue
 import io.legado.app.model.cache.CacheDownloadRepository
 import io.legado.app.model.cache.CacheDownloadRequest
 import io.legado.app.model.cache.CacheDownloadSource
 import io.legado.app.model.cache.CacheDownloadStateStore
+import io.legado.app.model.cache.CacheRecoveryWork
 import io.legado.app.model.cache.ChapterSelection
 import io.legado.app.model.cache.cacheRetryBackoffMs
 import kotlinx.coroutines.CancellationException
@@ -99,6 +101,15 @@ class CacheBookModel(
 
     @Synchronized
     fun queueCounts(): Pair<Int, Int> = queue.waitingCount() to onDownloadSet.size
+
+    @Synchronized
+    internal fun recoveryActivity(globallyPaused: Boolean): CacheDownloadActivity? = when {
+        chapterTasks.values.any { !it.isCompleted } -> CacheDownloadActivity.Running
+        else -> CacheRecoveryWork.activity(book.bookUrl)
+            ?: if (!globallyPaused && !isPaused && (queue.waitingCount() > 0 || isLoading)) {
+                CacheDownloadActivity.Waiting
+            } else null
+    }
 
     @Synchronized
     fun isWaiting(index: Int): Boolean = queue.isWaiting(index)
@@ -506,63 +517,71 @@ class CacheBookModel(
      * 从待下载列表内取第一条下载
      */
     fun download(scope: CoroutineScope, context: CoroutineContext) {
-        val candidate = nextDownloadCandidate() ?: return
-        val chapterIndex = candidate.chapterIndex
-        val chapter = repository.getChapter(book.bookUrl, chapterIndex) ?: run {
-            onSkipped(chapterIndex)
-            return
-        }
-        if (chapter.isVolume) {
-            host.emitChapterCached(chapter)
-            onSkipped(chapterIndex)
-            return
-        }
-        if (repository.hasImageContent(book, chapter, queue.isExplicitDownload(chapter.index))) {
-            onSkipped(chapterIndex)
-            return
-        }
+        var dispatchBookUrl: String? = null
+        try {
+            val candidate = nextDownloadCandidate { url ->
+                CacheRecoveryWork.begin(url, CacheDownloadActivity.Running)
+                dispatchBookUrl = url
+            } ?: return
+            val chapterIndex = candidate.chapterIndex
+            val chapter = repository.getChapter(book.bookUrl, chapterIndex) ?: run {
+                onSkipped(chapterIndex)
+                return
+            }
+            if (chapter.isVolume) {
+                host.emitChapterCached(chapter)
+                onSkipped(chapterIndex)
+                return
+            }
+            if (repository.hasImageContent(book, chapter, queue.isExplicitDownload(chapter.index))) {
+                onSkipped(chapterIndex)
+                return
+            }
 
-        if (repository.hasContent(book, chapter)) {
-            reportImageDownloadProgress(chapter, completed = 0)
-            val task = repository.saveCachedImagesTask(
+            if (repository.hasContent(book, chapter)) {
+                reportImageDownloadProgress(chapter, completed = 0)
+                val task = repository.saveCachedImagesTask(
+                    scope = scope,
+                    context = context,
+                    bookSource = bookSource,
+                    book = book,
+                    chapter = chapter,
+                    explicitDownload = queue.isExplicitDownload(chapter.index),
+                    start = CoroutineStart.LAZY,
+                    onProgress = { completed, total ->
+                        reportImageDownloadProgress(chapter, completed, total)
+                    },
+                )
+                if (!attachTaskIfActive(task, chapter, chapterIndex, scope, context)) {
+                    task.cancel()
+                    return
+                }
+                task.start()
+                return
+            }
+
+            reportContentDownloadProgress(chapterIndex)
+            val task = repository.cacheContentTask(
                 scope = scope,
-                context = context,
                 bookSource = bookSource,
                 book = book,
                 chapter = chapter,
-                explicitDownload = queue.isExplicitDownload(chapter.index),
+                context = context,
                 start = CoroutineStart.LAZY,
-                onProgress = { completed, total ->
-                    reportImageDownloadProgress(chapter, completed, total)
-                },
-            )
-            if (!attachTaskIfActive(task, chapter, chapterIndex, scope, context)) {
+                executeContext = context,
+            ).timeout(DOWNLOAD_TIMEOUT_MS)
+            if (!attachTaskIfActive(task, chapter, chapterIndex, scope, context, chainImagesAfterContent = true)) {
                 task.cancel()
                 return
             }
             task.start()
-            return
+        } finally {
+            dispatchBookUrl?.let { CacheRecoveryWork.end(it, CacheDownloadActivity.Running) }
         }
-
-        reportContentDownloadProgress(chapterIndex)
-        val task = repository.cacheContentTask(
-            scope = scope,
-            bookSource = bookSource,
-            book = book,
-            chapter = chapter,
-            context = context,
-            start = CoroutineStart.LAZY,
-            executeContext = context,
-        ).timeout(DOWNLOAD_TIMEOUT_MS)
-        if (!attachTaskIfActive(task, chapter, chapterIndex, scope, context, chainImagesAfterContent = true)) {
-            task.cancel()
-            return
-        }
-        task.start()
     }
 
     @Synchronized
-    private fun nextDownloadCandidate(): CacheDownloadCandidate? {
+    private fun nextDownloadCandidate(onDispatched: (String) -> Unit): CacheDownloadCandidate? {
         if (isPaused) return null
         val candidate = queue.next(book.bookUrl, onDownloadSet)
         if (candidate == null) {
@@ -579,6 +598,7 @@ class CacheBookModel(
             return null
         }
         onDownloadSet.add(chapterIndex)
+        onDispatched(candidate.bookUrl)
         host.stateStore.clearFailure(book.bookUrl, chapterIndex)
         notifyDownloadSetChanged()
         return candidate
@@ -643,15 +663,17 @@ class CacheBookModel(
                 completeChapterCache(chapter, content ?: (it as? String))
             }
         }.onError(IO) {
-            onPreError(chapter, it)
-            // 按失败次数退避；用满次数的最后一次不再空等，避免整书在队首挂住。
-            val attempt = retryAttemptAfterFailure(chapter.index)
-            try {
-                if (attempt > 0) delay(cacheRetryBackoffMs(attempt))
-            } finally {
-                onPostError(chapter, it)
+            CacheRecoveryWork.observe(chapter.bookUrl, CacheDownloadActivity.Retrying) {
+                onPreError(chapter, it)
+                // 按失败次数退避；用满次数的最后一次不再空等，避免整书在队首挂住。
+                val attempt = retryAttemptAfterFailure(chapter.index)
+                try {
+                    if (attempt > 0) delay(cacheRetryBackoffMs(attempt))
+                } finally {
+                    onPostError(chapter, it)
+                }
+                emitPendingReadError(chapter, it)
             }
-            emitPendingReadError(chapter, it)
         }.onCancel(IO) {
             // 失败重试由 onError 入队；主动暂停由 pause/pauseDownload 入队或标记 canceled
             onCancel(chapterIndex, requeue = false)
@@ -755,32 +777,33 @@ class CacheBookModel(
         )
     }
 
-    suspend fun downloadAwait(chapter: BookChapter): String {
-        synchronized(this) {
-            onDownloadSet.add(chapter.index)
-            queue.removeChapter(chapter.index)
-            notifyDownloadSetChanged()
-        }
-        try {
-            val content = repository.downloadContentAwait(bookSource, book, chapter)
-            ensureChapterImagesCached(chapter)
-            onSuccess(chapter)
-            ReadBook.downloadedChapters.add(chapter.index)
-            ReadBook.downloadFailChapters.remove(chapter.index)
-            return content
-        } catch (e: Exception) {
-            if (e is CancellationException) {
-                onCancel(chapter.index, requeue = false)
-                return "download canceled"
+    suspend fun downloadAwait(chapter: BookChapter): String =
+        CacheRecoveryWork.observe(chapter.bookUrl, CacheDownloadActivity.Running) {
+            synchronized(this) {
+                onDownloadSet.add(chapter.index)
+                queue.removeChapter(chapter.index)
+                notifyDownloadSetChanged()
             }
-            onError(chapter, e)
-            ReadBook.downloadFailChapters[chapter.index] =
-                (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
-            return "获取正文失败\n${e.localizedMessage}"
-        } finally {
-            host.onTaskQueuesChanged(book.bookUrl)
+            try {
+                val content = repository.downloadContentAwait(bookSource, book, chapter)
+                ensureChapterImagesCached(chapter)
+                onSuccess(chapter)
+                ReadBook.downloadedChapters.add(chapter.index)
+                ReadBook.downloadFailChapters.remove(chapter.index)
+                return@observe content
+            } catch (e: Exception) {
+                if (e is CancellationException) {
+                    onCancel(chapter.index, requeue = false)
+                    return@observe "download canceled"
+                }
+                onError(chapter, e)
+                ReadBook.downloadFailChapters[chapter.index] =
+                    (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
+                return@observe "获取正文失败\n${e.localizedMessage}"
+            } finally {
+                host.onTaskQueuesChanged(book.bookUrl)
+            }
         }
-    }
 
     fun download(
         scope: CoroutineScope,
@@ -788,100 +811,101 @@ class CacheBookModel(
         semaphore: Semaphore?,
         resetPageOffset: Boolean = false,
         preserveReadAloudPosition: Boolean = false,
-    ): Boolean {
-        if (!markChapterDownloadStarted(chapter.index)) {
-            // Chapter is already in onDownloadSet. Check if the task is actually alive.
-            val hasLiveTask = synchronized(this) {
-                chapterTasks.containsKey(chapter.index)
-            }
-            if (!hasLiveTask) {
-                // Stale entry: onDownloadSet has the index but no live task.
-                // Clean up and retry.
-                synchronized(this) {
-                    onDownloadSet.remove(chapter.index)
+    ): Boolean =
+        CacheRecoveryWork.observe(chapter.bookUrl, CacheDownloadActivity.Running) {
+            if (!markChapterDownloadStarted(chapter.index)) {
+                // Chapter is already in onDownloadSet. Check if the task is actually alive.
+                val hasLiveTask = synchronized(this) {
+                    chapterTasks.containsKey(chapter.index)
                 }
-                notifyDownloadSetChanged()
-                if (!markChapterDownloadStarted(chapter.index)) {
+                if (!hasLiveTask) {
+                    // Stale entry: onDownloadSet has the index but no live task.
+                    // Clean up and retry.
+                    synchronized(this) {
+                        onDownloadSet.remove(chapter.index)
+                    }
+                    notifyDownloadSetChanged()
+                    if (!markChapterDownloadStarted(chapter.index)) {
+                        markPendingReadRequest(
+                            chapter.index,
+                            resetPageOffset,
+                            preserveReadAloudPosition,
+                        )
+                        return@observe false
+                    }
+                } else {
                     markPendingReadRequest(
                         chapter.index,
                         resetPageOffset,
                         preserveReadAloudPosition,
                     )
-                    return false
+                    return@observe true
                 }
-            } else {
-                markPendingReadRequest(
-                    chapter.index,
-                    resetPageOffset,
-                    preserveReadAloudPosition,
-                )
-                return true
             }
-        }
-        val task = repository.downloadContentTask(
-            scope = scope,
-            bookSource = bookSource,
-            book = book,
-            chapter = chapter,
-            start = CoroutineStart.LAZY,
-            context = IO,
-            executeContext = IO,
-            semaphore = semaphore
-        ).timeout(DOWNLOAD_TIMEOUT_MS)
-        task.onSuccess { content ->
-            // 正文先交给阅读器；缓存成功态等图片完成后再标记
-            downloadFinish(
-                chapter,
-                content,
-                resetPageOffset,
-                preserveReadAloudPosition = preserveReadAloudPosition,
-            )
-            emitPendingReadContent(chapter, content)
-            try {
-                ensureChapterImagesCached(chapter)
-                onSuccess(chapter)
-                ReadBook.downloadedChapters.add(chapter.index)
-                ReadBook.downloadFailChapters.remove(chapter.index)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                onError(chapter, e)
+            val task = repository.downloadContentTask(
+                scope = scope,
+                bookSource = bookSource,
+                book = book,
+                chapter = chapter,
+                start = CoroutineStart.LAZY,
+                context = IO,
+                executeContext = IO,
+                semaphore = semaphore
+            ).timeout(DOWNLOAD_TIMEOUT_MS)
+            task.onSuccess { content ->
+                // 正文先交给阅读器；缓存成功态等图片完成后再标记
+                downloadFinish(
+                    chapter,
+                    content,
+                    resetPageOffset,
+                    preserveReadAloudPosition = preserveReadAloudPosition,
+                )
+                emitPendingReadContent(chapter, content)
+                try {
+                    ensureChapterImagesCached(chapter)
+                    onSuccess(chapter)
+                    ReadBook.downloadedChapters.add(chapter.index)
+                    ReadBook.downloadFailChapters.remove(chapter.index)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    onError(chapter, e)
+                    ReadBook.downloadFailChapters[chapter.index] =
+                        (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
+                    // 不覆盖已展示的正文
+                }
+            }.onError {
+                onError(chapter, it)
                 ReadBook.downloadFailChapters[chapter.index] =
                     (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
-                // 不覆盖已展示的正文
+                downloadFinish(
+                    chapter,
+                    "获取正文失败\n${it.localizedMessage}",
+                    resetPageOffset,
+                    preserveReadAloudPosition = preserveReadAloudPosition,
+                )
+                emitPendingReadError(chapter, it)
+            }.onCancel {
+                onCancel(chapter.index, requeue = false)
+                downloadFinish(
+                    chapter,
+                    "download canceled",
+                    resetPageOffset,
+                    canceled = true,
+                    preserveReadAloudPosition = preserveReadAloudPosition,
+                )
+            }.onFinally {
+                if (chapterTasks[chapter.index] === task) {
+                    chapterTasks.remove(chapter.index)
+                }
+                host.onTaskQueuesChanged(book.bookUrl)
             }
-        }.onError {
-            onError(chapter, it)
-            ReadBook.downloadFailChapters[chapter.index] =
-                (ReadBook.downloadFailChapters[chapter.index] ?: 0) + 1
-            downloadFinish(
-                chapter,
-                "获取正文失败\n${it.localizedMessage}",
-                resetPageOffset,
-                preserveReadAloudPosition = preserveReadAloudPosition,
-            )
-            emitPendingReadError(chapter, it)
-        }.onCancel {
-            onCancel(chapter.index, requeue = false)
-            downloadFinish(
-                chapter,
-                "download canceled",
-                resetPageOffset,
-                canceled = true,
-                preserveReadAloudPosition = preserveReadAloudPosition,
-            )
-        }.onFinally {
-            if (chapterTasks[chapter.index] === task) {
-                chapterTasks.remove(chapter.index)
+            task.start()
+            synchronized(this) {
+                chapterTasks[chapter.index] = task
             }
-            host.onTaskQueuesChanged(book.bookUrl)
+            true
         }
-        task.start()
-        synchronized(this) {
-            chapterTasks[chapter.index] = task
-        }
-        return true
-    }
 
     @Synchronized
     private fun markChapterDownloadStarted(index: Int): Boolean {

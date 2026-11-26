@@ -900,9 +900,10 @@ class TocViewModel(
     }
 
     fun saveTocRegex(newRegex: String) {
-        val book = bookState.value ?: return
+        val current = bookState.value ?: return
+        val book = if (bookRepository.isRecoveredText(current)) current.copy() else current
         book.tocUrl = newRegex
-        upBookTocRule(book) { error ->
+        upBookTocRule(book, applyRecoveredTitleRule = true) { error ->
             if (error != null) {
                 showMessage(context.getString(R.string.toc_rule_update_failed, error.localizedMessage))
             }
@@ -929,11 +930,15 @@ class TocViewModel(
         }
     }
 
-    private fun upBookTocRule(book: Book, complete: (Throwable?) -> Unit) {
+    private fun upBookTocRule(
+        book: Book,
+        applyRecoveredTitleRule: Boolean = false,
+        complete: (Throwable?) -> Unit,
+    ) {
         _isUploading.value = true
         execute {
-            bookRepository.update(book)
-            LocalBook.getChapterList(book).let { chapters ->
+            if (!bookRepository.isRecoveredText(book)) bookRepository.update(book)
+            LocalBook.getChapterList(book, applyRecoveredTitleRule).let { chapters ->
                 bookRepository.replaceChaptersAndUpdateBook(book, chapters)
                 ReadBook.onChapterListUpdated(book)
                 //bookState.value = book

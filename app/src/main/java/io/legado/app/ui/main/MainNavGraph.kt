@@ -889,7 +889,13 @@ fun MainActivity.mainEntryProvider(
 
     entry<MainRouteCacheMaintenance> {
         CacheMaintenanceRouteScreen(
-            onBackClick = { onNavigateBack() }
+            onBackClick = { onNavigateBack() },
+            onOpenLocalBook = { onNavigateToRoute(MainRouteReadBook(bookUrl = it)) },
+            onOpenRecoveredChapter = {
+                onNavigateToRoute(MainRouteReadBook(
+                    bookUrl = it.bookUrl, recoveredChapter = it.target, recoveredDigest = it.digest, chapterChanged = true,
+                ))
+            },
         )
     }
 
@@ -944,6 +950,8 @@ fun MainActivity.mainEntryProvider(
                     bookUrl = route.bookUrl,
                     inBookshelf = route.inBookshelf,
                     chapterChanged = route.chapterChanged,
+                    recoveredChapter = route.recoveredChapter,
+                    recoveredDigest = route.recoveredDigest,
                 )
             }
             val effectsReady = remember(readBookViewModel) { CompletableDeferred<Unit>() }
@@ -1566,6 +1574,11 @@ fun MainActivity.mainEntryProvider(
                         sharedCoverKey = route.sharedCoverKey ?: bookCoverSharedElementKey(bookUrl),
                     )
                 )
+            },
+            onOpenRecoveredChapter = {
+                onNavigateToRoute(MainRouteReadBook(
+                    bookUrl = it.bookUrl, recoveredChapter = it.target, recoveredDigest = it.digest, chapterChanged = true,
+                ))
             },
             onOpenMangaReader = { bookUrl, inBookshelf, chapterChanged ->
                 onNavigateToRoute(

@@ -171,7 +171,7 @@ fun ContentEditSheet(
                 )
             }
 
-            if (state.isLocalTxt) {
+            if (state.canWriteToSource) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AppCheckbox(
@@ -183,6 +183,13 @@ fun ContentEditSheet(
                         style = LegadoTheme.typography.bodyMedium,
                     )
                 }
+            } else if (state.isLocalTxt) {
+                Spacer(Modifier.height(8.dp))
+                AppText(
+                    text = stringResource(R.string.content_edit_recovered_cache_only),
+                    style = LegadoTheme.typography.bodySmall,
+                    color = LegadoTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

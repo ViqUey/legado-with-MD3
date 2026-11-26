@@ -13,7 +13,10 @@ import io.legado.app.data.repository.ReadSettingsRepository
 import io.legado.app.domain.gateway.BackupSettingsGateway
 import io.legado.app.domain.gateway.ChangeSourceSettingsGateway
 import io.legado.app.domain.gateway.DownloadCacheSettingsGateway
+import io.legado.app.domain.gateway.OrphanCacheRecoveryGateway
+import io.legado.app.domain.model.OrphanRecoveryException
 import io.legado.app.domain.model.ReadingProgress
+import io.legado.app.domain.model.RecoveryProblem
 import io.legado.app.domain.usecase.ChangeBookSourceUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.UploadReadingProgressUseCase
@@ -60,6 +63,7 @@ import kotlin.coroutines.coroutineContext
  */
 class ReadBookLoadDelegate(
     private val context: Context,
+    private val orphanRecoveryGateway: OrphanCacheRecoveryGateway,
     private val scope: CoroutineScope,
     private val host: Host,
     private val bookRepository: BookRepository,
@@ -126,7 +130,33 @@ class ReadBookLoadDelegate(
                 val book = initialBook ?: when {
                     bookUrl.isNullOrEmpty() -> bookRepository.getLastReadBook()
                     else -> bookRepository.getBook(bookUrl)
-                } ?: ReadBook.book
+                } ?: if (request.recoveredChapter == null) ReadBook.book else null
+                val restored = request.recoveredChapter
+                if (restored != null) {
+                    val chapter = book?.let { bookRepository.getChapter(it.bookUrl, restored.index) }
+                    if (chapter == null || chapter.url != restored.url || chapter.title != restored.title || chapter.isVolume) {
+                        ReadBook.upMsg(context.getString(R.string.feature_orphan_recovery_changed))
+                        host.setInitFinish()
+                        return@suspendSection
+                    }
+                    val text = try {
+                        val digest = request.recoveredDigest
+                            ?: throw OrphanRecoveryException(RecoveryProblem.ResultMissing)
+                        orphanRecoveryGateway.readRestoredChapter(chapter.bookUrl, restored, digest)
+                    } catch (error: OrphanRecoveryException) {
+                        ReadBook.upMsg(context.getString(when (error.problem) {
+                            RecoveryProblem.ResultMissing -> R.string.feature_orphan_recovery_result_missing
+                            RecoveryProblem.ResultChanged -> R.string.feature_orphan_recovery_result_changed
+                            else -> R.string.feature_orphan_recovery_changed
+                        }))
+                        host.setInitFinish()
+                        return@suspendSection
+                    }
+                    initBook(checkNotNull(book).copy(
+                        durChapterIndex = chapter.index, durChapterPos = 0, durChapterTitle = chapter.title,
+                    ), restoredContent = chapter to text)
+                    return@suspendSection
+                }
                 when {
                     book != null -> initBook(book)
                     else -> {
@@ -151,31 +181,44 @@ class ReadBookLoadDelegate(
     }
 
     /** 换书/重装目录后重走开书流程。VM 的「模拟阅读切换」和目录权限回来后也调它。 */
-    suspend fun initBook(book: Book) = ReaderPerfTrace.suspendSection("open.book") {
-        val isSameBook = ReadBook.book?.bookUrl == book.bookUrl
+    suspend fun initBook(book: Book, restoredContent: Pair<BookChapter, String>? = null) = ReaderPerfTrace.suspendSection("open.book") {
+        val openRecoveredChapter = restoredContent != null
+        val isSameBook = !openRecoveredChapter && ReadBook.book?.bookUrl == book.bookUrl
         if (isSameBook) {
             ReadBook.upData(book)
         } else {
             val playing = ReadAloud.bookSession.state.value
-            val readerBook = if (BaseReadAloudService.isRun && ReadAloud.bookSession.owns(book.bookUrl)) {
+            val readerBook = if (!openRecoveredChapter &&
+                BaseReadAloudService.isRun && ReadAloud.bookSession.owns(book.bookUrl)
+            ) {
                 book.copy(durChapterIndex = playing.chapterIndex, durChapterPos = playing.chapterPosition)
             } else book
             ReadBook.resetData(readerBook)
         }
         host.setInitFinish()
-        if (!book.isLocal && book.tocUrl.isEmpty() && !loadBookInfo(book)) {
+        if (!openRecoveredChapter && !book.isLocal && book.tocUrl.isEmpty() && !loadBookInfo(book)) {
             return@suspendSection
         }
         if (book.isLocal && !checkLocalBookFileExist(book)) {
             return@suspendSection
         }
-        if ((ReadBook.chapterSize == 0 || book.isLocalModified()) && !loadChapterListAwait(book)) {
+        if (!openRecoveredChapter && (ReadBook.chapterSize == 0 || book.isLocalModified()) &&
+            !loadChapterListAwait(book)
+        ) {
             return@suspendSection
         }
         ReadBook.upMsg(null)
         host.checkReadRecordAlias(book)
 
-        if (!isSameBook) {
+        if (restoredContent != null) {
+            // Render the verified bytes. A miss between navigation and init must
+            // never turn this explicit action into a network download.
+            ReadBook.loadRecoveredInitialContent(book, restoredContent.first, restoredContent.second) {
+                ReadBook.bookSource?.let {
+                    SourceCallBack.callBackBook(SourceCallBack.START_READ, it, book, restoredContent.first)
+                }
+            }
+        } else if (!isSameBook) {
             ReadBook.loadInitialContent(resetPageOffset = true,
                 preserveReadAloudPosition = ReadBook.isCurrentBookReadAloud) {
                 ReadBook.bookSource?.let {
@@ -199,7 +242,7 @@ class ReadBookLoadDelegate(
                 }
             }
         }
-        if (ReadBook.chapterChanged) {
+        if (openRecoveredChapter || ReadBook.chapterChanged) {
             ReadBook.chapterChanged = false
         } else if (!ReadBook.isCurrentBookReadAloud && ReadBook.inBookshelf) {
             if (backupSettingsGateway.currentSettings.syncBookProgressPlus) {
@@ -208,7 +251,7 @@ class ReadBookLoadDelegate(
                 syncBookProgress(book)
             }
         }
-        if (!book.isLocal && ReadBook.bookSource == null) {
+        if (!openRecoveredChapter && !book.isLocal && ReadBook.bookSource == null) {
             autoChangeSource(book.name, book.author)
             return@suspendSection
         }
@@ -244,18 +287,18 @@ class ReadBookLoadDelegate(
     }
 
     /** 重新拉目录。会话侧 `loadChapterList` 回调和 TOC 正则改动都走这里。 */
-    fun doLoadChapterList(book: Book) {
+    fun doLoadChapterList(book: Book, applyRecoveredTitleRule: Boolean = false) {
         Coroutine.async(scope, Dispatchers.IO) {
-            if (loadChapterListAwait(book)) {
+            if (loadChapterListAwait(book, applyRecoveredTitleRule)) {
                 ReadBook.upMsg(null)
             }
         }
     }
 
-    private suspend fun loadChapterListAwait(book: Book): Boolean {
+    private suspend fun loadChapterListAwait(book: Book, applyRecoveredTitleRule: Boolean = false): Boolean {
         if (book.isLocal) {
             kotlin.runCatching {
-                LocalBook.getChapterList(book).let {
+                LocalBook.getChapterList(book, applyRecoveredTitleRule).let {
                     bookRepository.replaceChaptersAndUpdateBook(book, it)
                     ReadBook.onChapterListUpdated(book)
                 }
