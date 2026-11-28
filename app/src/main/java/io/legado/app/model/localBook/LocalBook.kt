@@ -295,14 +295,24 @@ object LocalBook {
      */
     fun importFile(uri: Uri): Book = importFiles(uri).first()
 
+    private data class NewExport(
+        val privateBook: Boolean,
+        val groupMask: Long,
+        val knownNameAuthor: Pair<String, String>?,
+    )
+
     /** A newly generated external document must never rebind a stale or existing book. */
-    internal fun importNewExport(uri: Uri, privateBook: Boolean, groupMask: Long): Book =
-        importSingleFile(FileDoc.fromUri(uri, false), newExport = privateBook to groupMask)
+    internal fun importNewExport(
+        uri: Uri, privateBook: Boolean, groupMask: Long,
+        knownNameAuthor: Pair<String, String>? = null,
+    ): Book = importSingleFile(
+        FileDoc.fromUri(uri, false), newExport = NewExport(privateBook, groupMask, knownNameAuthor),
+    )
 
     private fun importSingleFile(
         input: FileDoc,
         comicArchive: Boolean = false,
-        newExport: Pair<Boolean, Long>? = null,
+        newExport: NewExport? = null,
     ): Book {
         if (input.size == 0L) throw EmptyFileException("Unexpected empty File")
         val (fileName, _, _, updateTime) = input
@@ -323,15 +333,16 @@ object LocalBook {
             if (reusableBook != null) {
                 return rebindLocalBook(reusableBook, bookUrl, fileName, type.takeIf { comicArchive })
             }
-            val nameAuthor = analyzeNameAuthor(fileName)
+            // The recovery TXT exporter already knows these fields; the file name may be truncated or numbered.
+            val nameAuthor = newExport?.knownNameAuthor ?: analyzeNameAuthor(fileName)
             book = Book(
                 type = type,
                 bookUrl = bookUrl,
                 name = nameAuthor.first,
                 author = nameAuthor.second,
                 originName = fileName,
-                isPrivate = newExport?.first ?: false,
-                group = newExport?.second ?: 0L,
+                isPrivate = newExport?.privateBook ?: false,
+                group = newExport?.groupMask ?: 0L,
                 latestChapterTime = updateTime,
                 order = appDb.bookDao.minOrder - 1
             )

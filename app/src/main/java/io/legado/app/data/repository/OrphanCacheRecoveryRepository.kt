@@ -381,7 +381,9 @@ class OrphanCacheRecoveryRepository internal constructor(
             job.ensureActive()
             if (!canOpen(bookUrl, facts)) fail(RecoveryProblem.PrivateBook)
         }
-        val name = appCtx.getString(R.string.feature_orphan_recovery_local_name, cache.book.name)
+        val name = cache.book.name
+        val author = cache.book.getRealAuthor()
+        val intro = cache.book.getDisplayIntro()
         val temporary = File.createTempFile("orphan-export-", format.suffix, appCtx.cacheDir)
         val count = plan.selections.size
         var missingImages = 0
@@ -392,10 +394,10 @@ class OrphanCacheRecoveryRepository internal constructor(
                     // Match the ordinary TXT export preface; use the same metadata as recovery EPUB.
                     output.write(name)
                     output.write("\n")
-                    output.write(appCtx.getString(R.string.author_show, cache.book.getRealAuthor()))
+                    output.write(appCtx.getString(R.string.author_show, author))
                     output.write("\n")
                     output.write(appCtx.getString(
-                        R.string.intro_show, "\n" + HtmlFormatter.format(cache.book.getDisplayIntro()),
+                        R.string.intro_show, "\n" + HtmlFormatter.format(intro),
                     ))
                     output.write("\n\n")
                     plan.selections.forEachIndexed { index, selection ->
@@ -409,7 +411,7 @@ class OrphanCacheRecoveryRepository internal constructor(
                     }
                 }
                 RecoveryExportFormat.Epub -> {
-                    val writer = TextEpubExport(name, cache.book.getRealAuthor(), cache.book.getDisplayIntro(), check)
+                    val writer = TextEpubExport(name, author, intro, check)
                     val expected = writer.write(temporary) {
                         check()
                         RecoveryIllustrations.cover(cache.book)?.let(::cover)
@@ -441,7 +443,7 @@ class OrphanCacheRecoveryRepository internal constructor(
             }
             checkPublication()
             val published = RecoveryExportFiles.publish(
-                temporary, directory, name, format,
+                temporary, directory, name, author, format,
                 occupied = { fileName, uri ->
                     database.bookDao.hasFile(fileName) || uri?.let {
                         val url = if (it.scheme == "content") it.toString() else it.path
@@ -464,6 +466,7 @@ class OrphanCacheRecoveryRepository internal constructor(
                         val sourceBook = availableBook(bookUrl)
                         LocalBook.importNewExport(
                             published.uri, sourceBook.isPrivate, database.bookDao.privateGroupsForBook(bookUrl),
+                            knownNameAuthor = if (format == RecoveryExportFormat.Txt) name to author else null,
                         )
                     })
                     result = result.copy(importedBookUrl = imported.bookUrl)

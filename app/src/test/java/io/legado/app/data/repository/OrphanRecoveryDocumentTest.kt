@@ -27,7 +27,8 @@ import java.io.RandomAccessFile
 class OrphanRecoveryDocumentTest {
     @get:Rule val temporary = TemporaryFolder()
     private val tree = Uri.parse("content://recovery.fixture/tree/root")
-    private val name = "Original - random.txt"
+    private val name = "Original.txt"
+    private val names = RecoveryExportNames("Original", "", ".txt")
     private val format = RecoveryExportFormat.Txt
 
     @Test fun fullNameIsSentAndSafeProviderNormalizationIsAccepted() {
@@ -41,6 +42,51 @@ class OrphanRecoveryDocumentTest {
         assertFalse(result.durableRead)
         assertEquals(source.readText(), docs.newFile.readText())
         assertEquals("unrelated", docs.original.readText())
+    }
+
+    @Test fun choosesFirstAvailableNumberAcrossCaseInsensitiveChildrenAndDatabaseNames() {
+        val docs = Documents(temporary.newFolder()).apply {
+            originalName = "original.TXT"
+            name = "Original（2）.txt"
+        }
+        val source = temporary.newFile().apply { writeText("new chapters") }
+        val result = publish(source, docs, occupied = { candidate, _ -> candidate == "Original（1）.txt" })
+        assertEquals("Original（2）.txt", docs.requested)
+        assertEquals("Original（2）.txt", result.name)
+        assertEquals(1, docs.createCalls)
+        assertEquals("new chapters", docs.newFile.readText())
+        assertEquals("unrelated", docs.original.readText())
+    }
+
+    @Test fun latePreCreateCollisionFailsWithoutOpeningOrDeletingTheOtherDocument() {
+        val docs = Documents(temporary.newFolder()).apply { lateName = "Original.TXT" }
+        val source = temporary.newFile().apply { writeText("new chapters") }
+        assertThrows(IOException::class.java) { publish(source, docs) }
+        assertEquals(0, docs.createCalls)
+        assertEquals(0, docs.opens)
+        assertEquals(0, docs.deletes)
+        assertEquals("unrelated", docs.original.readText())
+    }
+
+    @Test fun exhaustedOrCancelledCandidateSearchDoesNotCreateADocument() {
+        val source = temporary.newFile().apply { writeText("new chapters") }
+        val exhausted = Documents(temporary.newFolder())
+        var attempts = 0
+        assertThrows(IOException::class.java) {
+            publish(source, exhausted, occupied = { _, _ -> attempts++; true })
+        }
+        assertEquals(10_000, attempts)
+        assertEquals(0, exhausted.createCalls)
+        val cancelled = Documents(temporary.newFolder())
+        var checks = 0
+        assertThrows(CancellationException::class.java) {
+            publish(source, cancelled, occupied = { _, _ -> true }, check = {
+                if (++checks == 3) throw CancellationException("candidate search")
+            })
+        }
+        assertEquals(0, cancelled.createCalls)
+        assertEquals("unrelated", exhausted.original.readText())
+        assertEquals("unrelated", cancelled.original.readText())
     }
 
     @Test fun ownedDocumentIsRemovedAfterFailuresInTheExternalPublicationStage() {
@@ -73,7 +119,10 @@ class OrphanRecoveryDocumentTest {
             assertEquals(failure, 0, docs.opens)
             if (failure == "other parent") assertTrue(docs.newFile.exists())
             if (failure == "cannot list before") assertFalse(docs.created)
-            if (failure == "name collision") assertFalse(docs.newFile.exists())
+            if (failure == "name collision") {
+                assertFalse(docs.newFile.exists())
+                assertEquals(1, docs.createCalls)
+            }
         }
     }
 
@@ -82,23 +131,28 @@ class OrphanRecoveryDocumentTest {
         docs: Documents,
         occupied: (String, Uri?) -> Boolean = { _, _ -> false },
         check: () -> Unit = {},
-    ) = RecoveryExportFiles.publishDocument(source, tree, name, format, occupied, check, docs)
+    ) = RecoveryExportFiles.publishDocument(source, tree, names, format, occupied, check, docs)
 
     private inner class Documents(directory: File) : DocumentAccess {
         val original = directory.resolve("existing").apply { writeText("unrelated") }
         val newFile = directory.resolve("new")
         val newUri: Uri = DocumentsContract.buildDocumentUriUsingTree(tree, "new")
+        var originalName = "existing.txt"
         var name = "Provider normalized.txt"
         var requested: String? = null
         var created = false
+        var createCalls = 0
+        var lateName: String? = null
+        private var listings = 0
         var fault: String? = null
         var opens = 0
+        var deletes = 0
         var partialBytesWritten = 0L
 
         private fun child(): Child {
             val actual = when (fault) {
                 "name" -> "Provider removed extension"
-                "name collision" -> "existing.txt"
+                "name collision" -> originalName
                 else -> name
             }
             return Child("new", actual, if (fault == "type") "image/png" else format.mime)
@@ -106,14 +160,17 @@ class OrphanRecoveryDocumentTest {
 
         override fun children(): List<Child> {
             if (fault == "cannot list before") throw IOException("Parent query failed")
+            listings++
             return buildList {
-                add(Child("existing", "existing.txt", format.mime))
+                add(Child("existing", originalName, format.mime))
+                if (listings > 1) lateName?.let { add(Child("late", it, format.mime)) }
                 if (newFile.exists() && fault != "other parent") add(child())
             }
         }
 
         override fun create(mime: String, name: String): Uri {
             assertEquals(format.mime, mime)
+            createCalls++
             requested = name
             if (fault == "existing id") return DocumentsContract.buildDocumentUri(tree.authority, "existing")
             created = newFile.createNewFile()
@@ -149,6 +206,7 @@ class OrphanRecoveryDocumentTest {
         }
 
         override fun delete(uri: Uri) {
+            deletes++
             assertEquals(newUri, uri)
             assertTrue(newFile.delete())
         }

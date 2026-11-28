@@ -46,7 +46,6 @@
     <string name="feature_orphan_recovery_diff_large">Too large to compare here. Open either text tab to read it in full.</string>
     <string name="feature_orphan_recovery_replace">Replace cached text</string>
     <string name="feature_orphan_recovery_replace_warning">Replace the current cached text for “%1$s”? The orphaned text will be kept. The replaced text will not be backed up.</string>
-    <string name="feature_orphan_recovery_local_name">%1$s (cache recovery)</string>
     <string name="feature_orphan_recovery_restore_done">Chapter text restored. The original orphaned cache was kept.</string>
     <string name="feature_orphan_recovery_private">Unlock this book before accessing its cached text.</string>
     <string name="feature_orphan_recovery_busy_book">This book has a reader, read-aloud session, or download active or waiting. Finish it before restoring to the original book.</string>

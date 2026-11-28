@@ -20,7 +20,6 @@ import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
-import java.util.UUID
 
 internal object RecoveryExportFiles {
     data class Published(val name: String, val uri: Uri, val durableRead: Boolean)
@@ -29,20 +28,18 @@ internal object RecoveryExportFiles {
         temporary: File,
         directory: String,
         title: String,
+        author: String,
         format: RecoveryExportFormat,
         occupied: (String, Uri?) -> Boolean,
         check: () -> Unit,
     ): Published {
-        val base = title.map { if (it.isISOControl() || it in "\\/:*?\"<>|") '_' else it }
-            .joinToString("").take(70).trim('.', ' ').ifBlank { "Recovered" }
-        val suffix = " - ${UUID.randomUUID().toString().take(12)}${format.suffix}"
-        val name = base.trimEnd() + suffix
+        val names = RecoveryExportNames(title, author, format.suffix)
         val parsed = Uri.parse(directory)
         return if (parsed.scheme == "content") {
-            publishDocument(temporary, parsed, name, format, occupied, check)
+            publishDocument(temporary, parsed, names, format, occupied, check)
         } else {
             val path = File(parsed.path.takeIf { parsed.scheme == "file" } ?: directory)
-            publishFile(temporary, path, name, occupied, check)
+            publishFile(temporary, path, names, occupied, check)
         }
     }
 
@@ -68,7 +65,7 @@ internal object RecoveryExportFiles {
     }
 
     private fun publishFile(
-        temporary: File, directory: File, name: String,
+        temporary: File, directory: File, names: RecoveryExportNames,
         occupied: (String, Uri?) -> Boolean, check: () -> Unit,
     ): Published {
         if (!directory.isAbsolute) throw IOException("An absolute export directory is required")
@@ -88,10 +85,8 @@ internal object RecoveryExportFiles {
             current == canonical.toPath()
         }
         fun directoryAttributes() = Files.readAttributes(canonical.toPath(), BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-        val target = canonical.resolve(name)
-        val uri = Uri.fromFile(target)
-        if (!insideSharedRoot() || !Files.isDirectory(canonical.toPath(), NOFOLLOW_LINKS) || occupied(name, uri)) {
-            throw IOException("Export directory or file name is unavailable")
+        if (!insideSharedRoot() || !Files.isDirectory(canonical.toPath(), NOFOLLOW_LINKS)) {
+            throw IOException("Export directory is unavailable")
         }
         val parentKey = directoryAttributes().fileKey()
         fun requireOriginalDirectory() {
@@ -99,34 +94,43 @@ internal object RecoveryExportFiles {
                 directoryAttributes().fileKey() != parentKey
             ) throw IOException("Export directory changed")
         }
-        check()
-        requireOriginalDirectory()
-        val path = target.toPath()
-        val output = try {
-            Files.newOutputStream(path, CREATE_NEW, WRITE, NOFOLLOW_LINKS)
-        } catch (error: FileAlreadyExistsException) {
-            throw IOException("Another file already uses this name", error)
-        }
-        fun identity() = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
-        var key: Any? = null
-        try {
-            output.use { out ->
-                key = identity()
-                temporary.inputStream().use { input -> transfer(input, out, check) }
+        for (name in names.candidates()) {
+            check()
+            requireOriginalDirectory()
+            val target = canonical.resolve(name)
+            val uri = Uri.fromFile(target)
+            val path = target.toPath()
+            if (Files.exists(path, NOFOLLOW_LINKS) || occupied(name, uri)) continue
+            check()
+            requireOriginalDirectory()
+            val output = try {
+                Files.newOutputStream(path, CREATE_NEW, WRITE, NOFOLLOW_LINKS)
+            } catch (_: FileAlreadyExistsException) {
+                // A competing creator won after our check; we have not opened its file.
+                continue
             }
-            requireOriginalDirectory()
-            if (key != null && key != identity()) throw IOException("Exported file was replaced")
-            verify(temporary, Files.newInputStream(path, NOFOLLOW_LINKS), check)
-            requireOriginalDirectory()
-            if (key != null && key != identity()) throw IOException("Exported file was replaced")
-            return Published(name, uri, durableRead = true)
-        } catch (error: Throwable) {
-            runCatching {
+            fun identity() = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
+            var key: Any? = null
+            try {
+                output.use { out ->
+                    key = identity()
+                    temporary.inputStream().use { input -> transfer(input, out, check) }
+                }
                 requireOriginalDirectory()
-                if (key != null && key == identity()) Files.deleteIfExists(path)
+                if (key != null && key != identity()) throw IOException("Exported file was replaced")
+                verify(temporary, Files.newInputStream(path, NOFOLLOW_LINKS), check)
+                requireOriginalDirectory()
+                if (key != null && key != identity()) throw IOException("Exported file was replaced")
+                return Published(name, uri, durableRead = true)
+            } catch (error: Throwable) {
+                runCatching {
+                    requireOriginalDirectory()
+                    if (key != null && key == identity()) Files.deleteIfExists(path)
+                }
+                throw error
             }
-            throw error
         }
+        throw IOException("No available export file name")
     }
 
     internal data class Child(val id: String, val name: String, val mime: String)
@@ -142,13 +146,20 @@ internal object RecoveryExportFiles {
     }
 
     internal fun publishDocument(
-        temporary: File, tree: Uri, name: String, format: RecoveryExportFormat,
+        temporary: File, tree: Uri, names: RecoveryExportNames, format: RecoveryExportFormat,
         occupied: (String, Uri?) -> Boolean, check: () -> Unit,
         access: DocumentAccess = documentAccess(tree),
     ): Published {
         val parentId = DocumentsContract.getTreeDocumentId(tree)
-        val existing = access.children()
-        if (occupied(name, null) || existing.any { it.name.equals(name, ignoreCase = true) }) {
+        val initial = access.children()
+        val name = names.candidates().firstOrNull { candidate ->
+            check()
+            !initial.any { it.name.equals(candidate, ignoreCase = true) } && !occupied(candidate, null)
+        } ?: throw IOException("No available export file name")
+        check()
+        // Candidate search can take time. Refresh before create and never treat a previously seen ID as ours.
+        val existing = initial + access.children()
+        if (existing.any { it.name.equals(name, ignoreCase = true) } || occupied(name, null)) {
             throw IOException("Another file already uses this name")
         }
         check()

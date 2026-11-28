@@ -816,7 +816,7 @@ class OrphanCacheRecoveryRepositoryTest {
 
     private fun expectedTxtPreface(author: String = "", intro: String = ""): String {
         val context = RuntimeEnvironment.getApplication()
-        val title = context.getString(R.string.feature_orphan_recovery_local_name, book.name)
+        val title = book.name
         val authorLine = context.getString(R.string.author_show, author)
         val introLine = context.getString(R.string.intro_show, "\n$intro")
         return "$title\n$authorLine\n$introLine\n\n"
@@ -843,6 +843,7 @@ class OrphanCacheRecoveryRepositoryTest {
             val result = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, true) { _, _ -> }
             val header = expectedTxtPreface("作者甲", "自定义简介\n　　第二段")
             val exported = directory.resolve(result.fileName)
+            assertEquals("${book.name} 作者：作者甲.txt", result.fileName)
             assertEquals(header + chapters, exported.readText())
             assertFalse(exported.readText().contains("原简介"))
 
@@ -850,6 +851,9 @@ class OrphanCacheRecoveryRepositoryTest {
             // that meets its auto-detection threshold. This is not a custom recovery format.
             db.txtTocRuleDao.insert(TxtTocRule(name = "test chapters", chapterRule = "^第[0-9]+章[^\\r\\n]*"))
             val imported = checkNotNull(db.bookDao.getBook(checkNotNull(result.importedBookUrl)))
+            assertEquals(book.name, imported.name)
+            assertEquals("作者甲", imported.author)
+            assertEquals(result.fileName, imported.originName)
             val toc = TextFile.getChapterList(imported)
             assertEquals(listOf("前言", firstTitle, secondTitle), toc.map { it.title })
             assertEquals(header, imported.intro)
@@ -858,12 +862,155 @@ class OrphanCacheRecoveryRepositoryTest {
 
             db.bookDao.update(original.copy(customIntro = null))
             val fallback = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals("${book.name}（1） 作者：作者甲.txt", fallback.fileName)
             assertEquals(expectedTxtPreface("作者甲", "原简介") + chapters, directory.resolve(fallback.fileName).readText())
             db.bookDao.update(original.copy(author = "", intro = null, customIntro = null))
             val empty = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals("${book.name}.txt", empty.fileName)
             assertEquals(expectedTxtPreface() + chapters, directory.resolve(empty.fileName).readText())
         } finally {
             TextFile.clear()
+            stopKoin()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Config(shadows = [EpubSeekableFilesShadow::class])
+    @Test fun repeatedTxtAndEpubExportsKeepIndependentFileAndBookIdentities() = fixture { repo, db, _, _ ->
+        val original = book.copy(author = "作者甲", durChapterIndex = 7, durChapterPos = 23)
+        db.bookDao.update(original)
+        flat("orphan.nb", "保留正文")
+        val source = repo.scanBook(book.bookUrl).texts.single()
+        val plan = repo.inspectExport(book.bookUrl, listOf(LocalRecoverySelection(source, "历史章", null)))
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "numbered-exports-",
+        ).toFile()
+        val otherDirectory = directory.resolve("other").apply { mkdir() }
+        startImportSettings()
+        try {
+            suspend fun export(format: RecoveryExportFormat, target: File = directory, auto: Boolean = true) =
+                repo.export(book.bookUrl, plan, format, target.path, auto) { _, _ -> }
+            fun imported(result: io.legado.app.domain.model.RecoveryExportResult): Book =
+                checkNotNull(db.bookDao.getBook(checkNotNull(result.importedBookUrl)))
+
+            val txt1 = export(RecoveryExportFormat.Txt)
+            assertEquals("${book.name} 作者：作者甲.txt", txt1.fileName)
+            val firstFile = directory.resolve(txt1.fileName)
+            val firstBytes = firstFile.readBytes()
+            val firstBook = imported(txt1)
+            db.bookDao.update(firstBook.copy(durChapterIndex = 5))
+
+            // Only a database reservation exists in the second directory for this candidate.
+            val txt2 = export(RecoveryExportFormat.Txt, otherDirectory)
+            assertEquals("${book.name}（1） 作者：作者甲.txt", txt2.fileName)
+            val secondBook = imported(txt2)
+            assertEquals(firstFile.readText(), otherDirectory.resolve(txt2.fileName).readText())
+            assertEquals(expectedTxtPreface("作者甲") + "历史章\n保留正文\n\n", firstFile.readText())
+
+            // The base candidate exists on disk; number 1 is reserved by a record in the other directory.
+            val txt3 = export(RecoveryExportFormat.Txt, auto = false)
+            assertEquals("${book.name}（2） 作者：作者甲.txt", txt3.fileName)
+            assertNull(txt3.importedBookUrl)
+            val manualTxt = LocalBook.importFile(Uri.fromFile(directory.resolve(txt3.fileName)))
+            assertEquals("${book.name}（2）", manualTxt.name)
+            assertEquals(original.author, manualTxt.author)
+
+            val epub1 = export(RecoveryExportFormat.Epub)
+            assertEquals("${book.name} 作者：作者甲.epub", epub1.fileName)
+            val epubBytes = directory.resolve(epub1.fileName).readBytes()
+            val firstEpub = imported(epub1)
+            val epub2 = export(RecoveryExportFormat.Epub, auto = false)
+            assertEquals("${book.name}（1） 作者：作者甲.epub", epub2.fileName)
+            val secondEpubFile = directory.resolve(epub2.fileName)
+            ZipFile(secondEpubFile).use { zip ->
+                val opf = zip.getInputStream(zip.getEntry("EPUB/book.opf")).reader().use { it.readText() }
+                assertTrue(opf.contains("<dc:title>${original.name}</dc:title>"))
+                assertTrue(opf.contains("<dc:creator>${original.author}</dc:creator>"))
+                assertFalse(opf.contains("（1）"))
+            }
+            val secondEpub = LocalBook.importFile(Uri.fromFile(secondEpubFile))
+
+            val independent = listOf(firstBook, secondBook, manualTxt, firstEpub, secondEpub)
+            for (local in independent) {
+                assertEquals(original.author, local.author)
+                assertEquals(0, local.durChapterIndex)
+                assertEquals(0, local.durChapterPos)
+                assertEquals(0L, local.group)
+                assertFalse(local.isPrivate)
+            }
+            for (local in listOf(firstBook, secondBook, firstEpub, secondEpub)) assertEquals(original.name, local.name)
+            val expectedUrls = (independent.map { it.bookUrl } + original.bookUrl).toSet()
+            assertEquals(6, expectedUrls.size)
+            assertEquals(expectedUrls, db.bookDao.allBookUrls.toSet())
+            assertEquals(expectedUrls, db.bookDao.flowBookShelfSearch(original.name).first().map { it.bookUrl }.toSet())
+            assertEquals(6, (independent + original).map { it.getFolderName() }.toSet().size)
+            val unchangedOriginal = checkNotNull(db.bookDao.getBook(original.bookUrl))
+            assertEquals(7, unchangedOriginal.durChapterIndex)
+            assertEquals(23, unchangedOriginal.durChapterPos)
+            assertEquals(5, db.bookDao.getBook(firstBook.bookUrl)?.durChapterIndex)
+            assertTrue(firstBytes.contentEquals(firstFile.readBytes()))
+            assertTrue(epubBytes.contentEquals(directory.resolve(epub1.fileName).readBytes()))
+        } finally {
+            EpubFile.clear()
+            EpubSeekableFilesShadow.reset()
+            stopKoin()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun automaticTxtImportUsesExportSnapshotButManualImportStillUsesUserScript() = fixture { repo, db, _, _ ->
+        val original = book.copy(author = "原作者")
+        db.bookDao.update(original)
+        flat("orphan.nb", "正文")
+        val source = repo.scanBook(book.bookUrl).texts.single()
+        val plan = repo.inspectExport(book.bookUrl, listOf(LocalRecoverySelection(source, "历史章", null)))
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "export-metadata-snapshot-",
+        ).toFile()
+        startImportSettings("var name = '脚本书名'; var author = '脚本作者';")
+        try {
+            val result = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, true) { _, _ ->
+                db.bookDao.update(original.copy(author = "新作者"))
+            }
+            val imported = checkNotNull(db.bookDao.getBook(checkNotNull(result.importedBookUrl)))
+            assertEquals(original.name, imported.name)
+            assertEquals("原作者", imported.author)
+            assertEquals("${book.name} 作者：原作者.txt", result.fileName)
+            assertEquals(expectedTxtPreface("原作者") + "历史章\n正文\n\n", directory.resolve(result.fileName).readText())
+            assertEquals("新作者", db.bookDao.getBook(book.bookUrl)?.author)
+            val manual = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals("${book.name} 作者：新作者.txt", manual.fileName)
+            val parsed = LocalBook.importFile(Uri.fromFile(directory.resolve(manual.fileName)))
+            assertEquals("脚本书名", parsed.name)
+            assertEquals("脚本作者", parsed.author)
+        } finally {
+            stopKoin()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun automaticTxtImportPreservesUnparseableOriginalNameAndEmptyAuthor() = fixture { repo, db, _, _ ->
+        val original = book.copy(name = "Stand by Me /《小说》" + "長".repeat(100), author = "")
+        db.bookDao.update(original)
+        write(File(root, original.getFolderName()).resolve("orphan.nb"), "正文")
+        val source = repo.scanBook(book.bookUrl).texts.single()
+        val plan = repo.inspectExport(book.bookUrl, listOf(LocalRecoverySelection(source, "历史章", null)))
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "long-txt-export-",
+        ).toFile()
+        startImportSettings()
+        try {
+            val result = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, true) { _, _ -> }
+            assertTrue(result.fileName.startsWith("Stand by Me _《小说》"))
+            assertFalse(result.fileName.contains('/'))
+            assertFalse(result.fileName.contains(" 作者："))
+            assertTrue(result.fileName.toByteArray(Charsets.UTF_8).size <= 240)
+            assertTrue(directory.resolve(result.fileName).readText().startsWith(original.name + "\n"))
+            val imported = checkNotNull(db.bookDao.getBook(checkNotNull(result.importedBookUrl)))
+            assertEquals(original.name, imported.name)
+            assertEquals("", imported.author)
+            assertEquals(result.fileName, imported.originName)
+        } finally {
             stopKoin()
             directory.deleteRecursively()
         }
@@ -968,7 +1115,7 @@ class OrphanCacheRecoveryRepositoryTest {
         try {
             Files.createSymbolicLink(linked, alternate.toPath())
             fun publishTo(directory: String, check: () -> Unit = {}) = RecoveryExportFiles.publish(
-                source, directory, "recovery", RecoveryExportFormat.Txt, { _, _ -> false }, check,
+                source, directory, "recovery", "", RecoveryExportFormat.Txt, { _, _ -> false }, check,
             )
             assertTrue(runCatching { publishTo(linked.toString()) }.exceptionOrNull() is IOException)
             val displaced = root.resolve("displaced")
@@ -987,6 +1134,62 @@ class OrphanCacheRecoveryRepositoryTest {
             Files.deleteIfExists(linked)
             if (Files.isSymbolicLink(chosen.toPath())) Files.delete(chosen.toPath())
             root.deleteRecursively()
+        }
+    }
+
+    @Test fun rawPublicationSkipsDiskAndDatabaseReservationsAndRetriesAnExclusiveCreateRace() = fixture { _, _, _, _ ->
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "numbered-files-",
+        ).toFile()
+        val source = directory.resolve("source.payload").apply { writeText("new content") }
+        val first = directory.resolve("Novel 作者：Author.txt").apply { writeText("keep first") }
+        val occupiedDirectory = directory.resolve("Novel（2） 作者：Author.txt").apply { mkdir() }
+        val racer = directory.resolve("Novel（3） 作者：Author.txt")
+        val higher = directory.resolve("Novel（5） 作者：Author.txt").apply { writeText("keep higher") }
+        try {
+            val result = RecoveryExportFiles.publish(
+                source, directory.path, "Novel", "Author", RecoveryExportFormat.Txt,
+                occupied = { name, uri ->
+                    assertEquals(directory.resolve(name).canonicalPath, uri?.path)
+                    // Runs after the preflight existence check but before CREATE_NEW.
+                    if (name == racer.name) racer.writeText("competing creator")
+                    name == "Novel（1） 作者：Author.txt"
+                },
+                check = {},
+            )
+            assertEquals("Novel（4） 作者：Author.txt", result.name)
+            assertEquals("new content", directory.resolve(result.name).readText())
+            assertEquals("keep first", first.readText())
+            assertTrue(occupiedDirectory.isDirectory)
+            assertEquals("competing creator", racer.readText())
+            assertEquals("keep higher", higher.readText())
+            assertFalse(directory.resolve("Novel（1） 作者：Author.txt").exists())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test fun rawPublicationDoesNotRetryWriteFailuresUnderAnotherName() = fixture { _, _, _, _ ->
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "numbered-write-failure-",
+        ).toFile()
+        val source = directory.resolve("source.payload").apply { writeText("new content") }
+        val target = directory.resolve("Novel.txt")
+        var attempts = 0
+        try {
+            val failure = runCatching {
+                RecoveryExportFiles.publish(
+                    source, directory.path, "Novel", "", RecoveryExportFormat.Txt,
+                    occupied = { _, _ -> attempts++; false },
+                    check = { if (target.exists()) throw IOException("write failed") },
+                )
+            }.exceptionOrNull()
+            assertTrue(failure is IOException)
+            assertEquals("write failed", failure?.message)
+            assertEquals(1, attempts)
+            assertEquals(setOf(source.name), directory.list()!!.toSet())
+        } finally {
+            directory.deleteRecursively()
         }
     }
 
@@ -1642,7 +1845,7 @@ class OrphanCacheRecoveryRepositoryTest {
     private suspend fun problem(block: suspend () -> Any?): RecoveryProblem =
         (runCatching { block() }.exceptionOrNull() as OrphanRecoveryException).problem
 
-    private fun startImportSettings() {
+    private fun startImportSettings(fileNameRule: String? = null) {
         startKoin {
             modules(module {
                 single<OtherSettingsGateway> {
@@ -1665,7 +1868,7 @@ class OrphanCacheRecoveryRepositoryTest {
                 }
                 single<ImportBookSettingsGateway> {
                     object : ImportBookSettingsGateway {
-                        override val settings = MutableStateFlow(ImportBookSettings())
+                        override val settings = MutableStateFlow(ImportBookSettings(bookImportFileName = fileNameRule))
                         override val currentSettings get() = settings.value
                         override suspend fun update(transform: (ImportBookSettings) -> ImportBookSettings) {
                             settings.value = transform(settings.value)

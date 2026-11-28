@@ -46,7 +46,6 @@
     <string name="feature_orphan_recovery_diff_large">正文过长，无法显示差异。可分别打开两份正文查看全文。</string>
     <string name="feature_orphan_recovery_replace">替换缓存正文</string>
     <string name="feature_orphan_recovery_replace_warning">确定替换「%1$s」的当前缓存正文？原始孤立缓存将保留。被覆盖的当前正文不会自动备份。</string>
-    <string name="feature_orphan_recovery_local_name">%1$s（缓存恢复）</string>
     <string name="feature_orphan_recovery_restore_done">正文已恢复，原始孤立缓存已保留。</string>
     <string name="feature_orphan_recovery_private">请验证后再访问此书的缓存正文。</string>
     <string name="feature_orphan_recovery_busy_book">本书仍在阅读、朗读或有正在进行或等待的下载。请结束相关操作后再恢复至原书。</string>
