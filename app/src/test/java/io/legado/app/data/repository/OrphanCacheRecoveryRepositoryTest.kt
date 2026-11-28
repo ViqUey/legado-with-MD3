@@ -838,6 +838,68 @@ class OrphanCacheRecoveryRepositoryTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun txtAndEpubRemoveOnlyLeadingDuplicateTitlesWithoutChangingHistoricalCaches() = fixture { repo, _, _, _ ->
+        val oldTitle = "第七章 旧标题"
+        val historical = nested(name(6, oldTitle), "\uFEFF　$oldTitle \r\n历史正文\r\n末段")
+        val plain = flat("plain.nb", "普通正文\n自选标题\n末段")
+        val same = flat("same.nb", "相同标题\n相同标题\n正文")
+        val uncertain = flat(name(8, "另一章名"), "第八章 开始\n应保留正文")
+        val imageBytes = png(0xff0000)
+        val imageBody = "<img src=\"${inlinePng(imageBytes)}\">\n图后正文"
+        val illustrated = flat(name(9, "插图标题"), "插图标题\n$imageBody")
+        val sources = listOf(historical, plain, same, uncertain, illustrated)
+        val titles = listOf("第七章 新标题", "自选标题", "相同标题", "第八章 新标题", "插图新标题")
+        val expectedBodies = listOf("历史正文\r\n末段", plain.readText(), "相同标题\n正文", uncertain.readText(), imageBody)
+        val before = sources.map { it.readBytes() }
+        val catalog = repo.scanBook(book.bookUrl).texts.associateBy { it.id.child ?: it.id.entry }
+        val selections = sources.zip(titles).map { (file, title) ->
+            val item = catalog.getValue(file.name)
+            val preview = repo.preview(book.bookUrl, item)
+            assertEquals(file.readText(), preview.text)
+            LocalRecoverySelection(item, title, preview.digest)
+        }
+        assertNull(selections[0].source.originalTitle)
+        assertNull(selections[3].source.originalTitle)
+        assertEquals("第八章 开始", selections[3].source.suggestedTitle)
+        assertEquals("插图标题", selections[4].source.originalTitle)
+        val plan = repo.inspectExport(book.bookUrl, selections)
+        assertTrue(plan.containsImages)
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "export-title-",
+        ).toFile()
+        try {
+            val txt = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals(
+                titles.zip(expectedBodies).joinToString("") { (title, body) -> "$title\n$body\n\n" },
+                directory.resolve(txt.fileName).readText(),
+            )
+            val epub = repo.export(book.bookUrl, plan, RecoveryExportFormat.Epub, directory.path, false) { _, _ -> }
+            assertEquals(0, epub.missingImages)
+            ZipFile(directory.resolve(epub.fileName)).use { zip ->
+                fun read(path: String) = zip.getInputStream(zip.getEntry(path)).reader().use { it.readText() }
+                titles.forEachIndexed { index, title ->
+                    val pageText = read("EPUB/chapter-${index + 1}.xhtml")
+                    val page = Jsoup.parse(pageText, "", Parser.xmlParser())
+                    assertEquals(title, page.select("h1").single().text())
+                    val expectedMarkup = if (index == 4) {
+                        val href = page.select("body > div img").single().attr("src")
+                        assertTrue(imageBytes.contentEquals(zip.getInputStream(zip.getEntry("EPUB/$href")).use { it.readBytes() }))
+                        "<img src=\"$href\" alt=\"\"/><br/>图后正文"
+                    } else expectedBodies[index].replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
+                    assertTrue(pageText.contains("<body><h1>$title</h1><div>$expectedMarkup</div></body>"))
+                }
+                val nav = Jsoup.parse(read("EPUB/nav.xhtml"), "", Parser.xmlParser())
+                assertEquals(titles, nav.select("nav li a").eachText())
+            }
+            sources.forEachIndexed { index, file ->
+                assertTrue(before[index].contentEquals(file.readBytes()))
+                val preview = repo.preview(book.bookUrl, selections[index].source)
+                assertEquals(selections[index].previewDigest, preview.digest)
+                assertEquals(file.readText(), preview.text)
+            }
+        } finally { directory.deleteRecursively() }
+    }
+
     @Test fun rawExportRejectsLinkedDirectoriesAndDirectoryReplacement() = fixture { _, _, _, _ ->
         val primary = android.os.Environment.getExternalStorageDirectory().toPath()
         val root = Files.createTempDirectory(primary, "export-path-").toFile()

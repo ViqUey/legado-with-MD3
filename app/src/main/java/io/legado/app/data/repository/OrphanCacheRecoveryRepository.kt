@@ -393,7 +393,7 @@ class OrphanCacheRecoveryRepository internal constructor(
                         val body = readSource(cache, selection.source, requireNotNull(selection.previewDigest), check)
                         output.write(selection.title)
                         output.write("\n")
-                        output.write(body.text)
+                        output.write(RecoveryExportTitle.body(body.text, selection))
                         output.write("\n\n")
                         onProgress(index + 1, count)
                     }
@@ -409,7 +409,7 @@ class OrphanCacheRecoveryRepository internal constructor(
                             val id = selection.source.id
                             val subject = if (id.child != null) id.entry else id.entry.removeSuffix(".nb")
                             val xhtml = RecoveryIllustrations.body(
-                                body.text, cache.book, subject, this,
+                                RecoveryExportTitle.body(body.text, selection), cache.book, subject, this,
                                 appCtx.getString(R.string.feature_orphan_recovery_missing_image), check,
                             ) { missingImages++ }
                             chapter(selection.title, xhtml)
