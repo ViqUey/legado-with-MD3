@@ -55,6 +55,7 @@ import io.legado.app.help.book.addType
 import io.legado.app.help.book.getDisplayTagList
 import io.legado.app.help.book.getExportFileName
 import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.supportsOrphanRecovery
 import io.legado.app.help.book.isNotShelf
 import io.legado.app.help.book.isSameNameAuthor
 import io.legado.app.help.book.isWebFile
@@ -1626,6 +1627,11 @@ class BookInfoViewModel(
                 )
             )
 
+            BookInfoMenuAction.CacheRecovery -> {
+                if (book.supportsOrphanRecovery) {
+                    emitEffect(BookInfoEffect.OpenCacheRecovery(book.bookUrl))
+                }
+            }
             BookInfoMenuAction.ShowLog -> showAppLog()
             BookInfoMenuAction.TogglePrivate -> toggleBookPrivate()
         }

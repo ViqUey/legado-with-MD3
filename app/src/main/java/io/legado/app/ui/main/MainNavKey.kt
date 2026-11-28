@@ -175,6 +175,10 @@ data object MainRouteCacheMaintenance : MainRoute
 @Serializable
 data class MainRouteReadBook(
     val bookUrl: String? = null,
+    val recoveredChapter: io.legado.app.domain.model.RecoveryTarget? = null,
+    val recoveredDigest: String? = null,
+    val chapterIndex: Int = -1,
+    val chapterPos: Int = -1,
     val readAloud: Boolean = false,
     val inBookshelf: Boolean = true,
     val chapterChanged: Boolean = false,

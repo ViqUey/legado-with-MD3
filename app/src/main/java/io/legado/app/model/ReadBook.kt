@@ -142,6 +142,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     @Volatile
     var book: Book? = null
         private set
+    @Volatile
     var callBack: CallBack? = null
 
     /**
@@ -804,6 +805,16 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         }
     }
 
+    // The callback is attached for the ViewModel lifetime, including reader child pages.
+    // Attachment is a UI presence signal. Requests can outlive detachment.
+    internal fun hasAttachedReader(bookUrl: String): Boolean =
+        callBack != null && book?.bookUrl == bookUrl
+
+    @Synchronized
+    internal fun onRecoveredChapterPublished(bookUrl: String) {
+        if (book?.bookUrl == bookUrl) clearTextChapter()
+    }
+
     @Synchronized
     fun clearTextChapter() {
         clearExpiredChapterLoadingJob(true)
@@ -1441,11 +1452,13 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     fun loadInitialContent(
         resetPageOffset: Boolean,
         preserveReadAloudPosition: Boolean = false,
+        onMissingContent: (() -> Unit)? = null,
         success: (() -> Unit)? = null,
     ) {
         val currentIndex = durChapterIndex
         loadContent(currentIndex, resetPageOffset = resetPageOffset,
-            preserveReadAloudPosition = preserveReadAloudPosition) {
+            preserveReadAloudPosition = preserveReadAloudPosition,
+            onMissingContent = onMissingContent) {
             success?.invoke()
             if (prefetchNextChapterEnabled) loadContent(currentIndex + 1, resetPageOffset = resetPageOffset)
             if (prefetchPrevChapterEnabled) loadContent(currentIndex - 1, resetPageOffset = resetPageOffset)
@@ -1493,6 +1506,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         upContent: Boolean = true,
         resetPageOffset: Boolean = false,
         preserveReadAloudPosition: Boolean = false,
+        onMissingContent: (() -> Unit)? = null,
         success: (() -> Unit)? = null
     ) {
         Coroutine.async {
@@ -1525,12 +1539,17 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                         preserveReadAloudPosition,
                         success = success
                     )
-                } ?: download(
-                    downloadScope,
-                    chapter,
-                    resetPageOffset,
-                    preserveReadAloudPosition = preserveReadAloudPosition,
-                )
+                } ?: if (onMissingContent != null) {
+                    removeLoading(index)
+                    withContext(Main) { onMissingContent() }
+                } else {
+                    download(
+                        downloadScope,
+                        chapter,
+                        resetPageOffset,
+                        preserveReadAloudPosition = preserveReadAloudPosition,
+                    )
+                }
             }
         }.onError {
             removeLoading(index)

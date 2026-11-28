@@ -1,5 +1,6 @@
 package io.legado.app.ui.book.changecover
 
+import io.legado.app.help.coil.DefaultCoverPath
 import android.app.Application
 import androidx.lifecycle.viewModelScope
 import io.legado.app.R
@@ -39,9 +40,6 @@ import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.Collections
 import java.util.concurrent.Executors
-
-/** 与 CoilBookCover 的 DefaultCoverPath 一致：选中它表示清除自定义封面、回落随机默认图。 */
-private const val DEFAULT_COVER_PATH = "use_default_cover"
 
 class ChangeCoverViewModel(
     application: Application,
@@ -185,7 +183,7 @@ class ChangeCoverViewModel(
         val default = CoverOption(
             key = "default",
             label = context.getString(R.string.default_cover),
-            coverUrl = DEFAULT_COVER_PATH,
+            coverUrl = DefaultCoverPath,
             isDefault = true,
         )
         val online = synchronized(searchBooks) { searchBooks.toList() }.map { book ->

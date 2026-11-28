@@ -156,6 +156,7 @@ class ReadBookViewModel(
     private val bookRepository: BookRepository,
     private val readRecordRepository: ReadRecordRepository,
     private val readerSession: ReaderSession,
+    orphanRecoveryGateway: io.legado.app.domain.gateway.OrphanCacheRecoveryGateway,
 ) : BaseViewModel(application) {
     // --- MVI State ---
 
@@ -444,6 +445,7 @@ class ReadBookViewModel(
 
     private val loadDelegate: ReadBookLoadDelegate = ReadBookLoadDelegate(
         context = context,
+        orphanRecoveryGateway = orphanRecoveryGateway,
         scope = viewModelScope,
         host = object : ReadBookLoadDelegate.Host {
             override var justInitData: Boolean

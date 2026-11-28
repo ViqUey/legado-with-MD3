@@ -110,6 +110,11 @@ val Book.isMarkdown: Boolean
 val Book.isOnLineTxt: Boolean
     get() = !isLocal && isType(BookType.text)
 
+internal fun supportsOrphanRecovery(type: Int): Boolean =
+    type and BookType.allBookTypeLocal == BookType.text
+
+internal val Book.supportsOrphanRecovery: Boolean get() = supportsOrphanRecovery(type)
+
 val Book.isWebFile: Boolean
     get() = isType(BookType.webFile)
 

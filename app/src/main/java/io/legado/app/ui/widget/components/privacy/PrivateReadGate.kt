@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -71,12 +72,14 @@ fun PrivateReadGate(
     bookUrl: String?,
     onExit: () -> Unit,
     onOpenLocalPasswordSettings: () -> Unit,
+    onAccessChanged: ((Boolean) -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val viewModel = koinViewModel<PrivateReadGateViewModel>(
         key = "PrivateReadGate:${bookUrl ?: "last-read"}"
     )
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val state by if (onAccessChanged != null) viewModel.uiState.collectAsState()
+    else viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showPasswordDialog by rememberSaveable { mutableStateOf(false) }
 
@@ -86,6 +89,9 @@ fun PrivateReadGate(
     val passwordTitle = stringResource(R.string.private_unlock_password_title)
 
     LaunchedEffect(bookUrl) { viewModel.resolve(bookUrl) }
+    LaunchedEffect(state.isChecking, state.isLocked, state.bookUrl) {
+        if (!state.isChecking && state.bookUrl == bookUrl) onAccessChanged?.invoke(!state.isLocked)
+    }
     LaunchedEffect(Unit) {
         viewModel.effects.collect { effect ->
             when (effect) {

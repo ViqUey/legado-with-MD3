@@ -16,7 +16,7 @@ import io.legado.app.domain.model.isPrivateBook
 import io.legado.app.domain.model.settings.BookshelfSettings
 import io.legado.app.ui.widget.components.image.cover.bookshelfCoverMemoryCacheKey
 import io.legado.app.ui.widget.components.image.cover.buildCoverImageRequest
-import io.legado.app.ui.widget.components.image.cover.isDefaultCoverPath
+import io.legado.app.help.coil.isDefaultCoverPath
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope

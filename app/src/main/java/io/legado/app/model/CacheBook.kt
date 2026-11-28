@@ -10,6 +10,8 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.book.isLocal
 import io.legado.app.model.CacheBook.explicitFifo
+import io.legado.app.model.cache.CacheDownloadActivity
+import io.legado.app.model.cache.CacheRecoveryWork
 import io.legado.app.model.cache.CacheDownloadRequest
 import io.legado.app.model.cache.CacheDownloadStateStore
 import io.legado.app.model.cache.ChapterSelection
@@ -221,6 +223,12 @@ object CacheBook {
         stateStore.markBookFailed(bookUrl, message)
         updateSummary()
         _queueChangedFlow.tryEmit(bookUrl)
+    }
+
+    internal fun recoveryActivity(bookUrl: String): CacheDownloadActivity? {
+        // Unlike downloadStateFlow, these describe the current owners of work.
+        if (CacheBookService.isAdmittingForRecovery(bookUrl)) return CacheDownloadActivity.Admission
+        return cacheBookMap[bookUrl]?.recoveryActivity(isPaused) ?: CacheRecoveryWork.activity(bookUrl)
     }
 
     fun diagnostics(): Diagnostics {

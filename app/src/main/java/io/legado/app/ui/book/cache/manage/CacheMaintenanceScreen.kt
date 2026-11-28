@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.cache.manage
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,6 +17,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
+import io.legado.app.domain.model.RecoveryReaderRequest
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryIntent
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryMenu
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryHost
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryViewModel
 import io.legado.app.ui.theme.adaptiveContentPadding
 import io.legado.app.ui.widget.components.AppScaffold
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
@@ -32,9 +38,14 @@ import java.util.Locale
 @Composable
 fun CacheMaintenanceRouteScreen(
     onBackClick: () -> Unit,
+    onOpenLocalBook: (String) -> Unit,
+    onOpenRecoveredChapter: (RecoveryReaderRequest) -> Unit,
+    onOpenPasswordSettings: () -> Unit = {},
     viewModel: CacheMaintenanceViewModel = koinViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val recoveryModel: OrphanRecoveryViewModel = koinViewModel()
+    val recovery by recoveryModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     LaunchedEffect(viewModel.effects) {
         viewModel.effects.collectLatest { effect ->
@@ -47,7 +58,9 @@ fun CacheMaintenanceRouteScreen(
         state = state,
         onIntent = viewModel::onIntent,
         onBackClick = onBackClick,
+        onOpenRecovery = { recoveryModel.onIntent(OrphanRecoveryIntent.Open(it)) },
     )
+    OrphanRecoveryHost(recovery, recoveryModel::onIntent, onOpenLocalBook, onOpenRecoveredChapter, onOpenPasswordSettings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +69,7 @@ private fun CacheMaintenanceScreen(
     state: CacheMaintenanceUiState,
     onIntent: (CacheMaintenanceIntent) -> Unit,
     onBackClick: () -> Unit,
+    onOpenRecovery: (String) -> Unit,
 ) {
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
 
@@ -134,12 +148,15 @@ private fun CacheMaintenanceScreen(
                                 R.string.cache_maintenance_orphan_desc,
                                 group.entryNames.size,
                                 formatBytes(group.bytes),
-                            ),
+                            ) + if (group.recoverySupported) "" else "\n" +
+                                stringResource(R.string.feature_orphan_recovery_unsupported_type),
                             trailingContent = {
-                                Checkbox(
-                                    checked = selected,
-                                    onCheckedChange = null,
-                                )
+                                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    if (group.recoverySupported) {
+                                        OrphanRecoveryMenu(enabled = !state.isBusy) { onOpenRecovery(group.bookUrl) }
+                                    }
+                                    Checkbox(checked = selected, onCheckedChange = null)
+                                }
                             },
                             onClick = { onIntent(CacheMaintenanceIntent.ToggleOrphanBook(group.bookUrl)) },
                             semanticRole = androidx.compose.ui.semantics.Role.Checkbox,

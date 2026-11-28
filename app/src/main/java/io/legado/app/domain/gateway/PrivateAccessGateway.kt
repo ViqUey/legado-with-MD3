@@ -1,6 +1,7 @@
 package io.legado.app.domain.gateway
 
 import io.legado.app.domain.model.PrivateAccessState
+import io.legado.app.domain.model.PrivateBookFacts
 import io.legado.app.domain.model.PrivateUnlockTarget
 import io.legado.app.domain.model.settings.PrivateAccessSettings
 import kotlinx.coroutines.flow.Flow
@@ -54,6 +55,10 @@ interface PrivateAccessGateway {
      * 不查盘、不做 IO；判定复用 [PrivateAccessState.isTargetGranted]，不另立一套规则。
      */
     fun isGrantedNow(bookUrl: String, group: Long): Boolean
+
+    /** Synchronous counterpart of the reader's effective book gate. */
+    fun canOpenBookNow(bookUrl: String, facts: PrivateBookFacts): Boolean =
+        !facts.isPrivate || isGrantedNow(bookUrl, facts.groupMask)
 
     /**
      * 关闭生物快捷：清空信封并把开关落成关闭。

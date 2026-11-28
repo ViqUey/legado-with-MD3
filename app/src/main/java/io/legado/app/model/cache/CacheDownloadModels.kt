@@ -62,6 +62,8 @@ data class CacheBookDownloadState(
     val chapterProgress: Map<Int, CacheChapterProgress> = emptyMap(),
 )
 
+internal enum class CacheDownloadActivity { Admission, Waiting, Running, Retrying }
+
 enum class CacheChapterProgressPhase {
     CONTENT,
     IMAGES,

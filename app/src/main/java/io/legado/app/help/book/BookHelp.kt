@@ -730,7 +730,28 @@ object BookHelp {
 
     /** A validated cached original and its lease; this path never downloads or promotes the cache. */
     fun openCachedImage(book: Book, chapter: BookChapter, src: String): java.io.InputStream {
-        val file = getImage(book, chapter, src)
+        return openLeasedCachedImage(getImage(book, chapter, src))
+    }
+
+    internal fun isRecoveryBubble(src: String): Boolean = src.isBubbleImageSrc()
+
+    internal fun openRecoveryImage(book: Book, subject: String, src: String): java.io.InputStream {
+        require(subject.isNotEmpty() && subject !in listOf(".", "..") &&
+            subject.none { it == '/' || it == '\\' || it.isISOControl() })
+        val dir = chapterImageDir(book, subject)
+        val file = chapterImageFile(book, dir, src)
+        val bookFolder = File(cachePath, book.getFolderName()).toPath().normalize()
+        val path = file.toPath().normalize()
+        if (!path.startsWith(bookFolder)) throw IOException("Invalid cached illustration path")
+        var parent = path
+        while (parent.startsWith(bookFolder)) {
+            if (java.nio.file.Files.isSymbolicLink(parent)) throw IOException("Linked cache illustration")
+            parent = parent.parent ?: break
+        }
+        return openLeasedCachedImage(file)
+    }
+
+    private fun openLeasedCachedImage(file: File): java.io.InputStream {
         val lease = pinImageFile(file)
         try {
             if (!imageFiles.isValid(file)) throw IOException("Cached comic image is missing or invalid")

@@ -4,6 +4,12 @@ import io.legado.app.utils.MD5Utils
 import splitties.init.appCtx
 import java.io.File
 
+/** The per-book default marker and an empty address both mean no real cover was selected. */
+internal const val DefaultCoverPath = "use_default_cover"
+
+internal fun isDefaultCoverPath(path: String?): Boolean =
+    path.isNullOrBlank() || path == DefaultCoverPath
+
 /**
  * filesDir 下的持久化封面文件缓存（不受“清除缓存”策略与系统低存储回收影响）。
  *

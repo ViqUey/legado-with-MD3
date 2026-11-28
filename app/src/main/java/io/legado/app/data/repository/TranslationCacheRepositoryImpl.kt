@@ -20,7 +20,7 @@ class TranslationCacheRepositoryImpl : TranslationCacheGateway {
         val bookFolder = File(cacheDir, book.getFolderName())
         // getFileName() returns "{index}-{titleMD5}.nb", remove .nb to avoid double extension
         val chapterFileName = bookChapter.getFileName().removeSuffix(".nb")
-        val translationFileName = "$chapterFileName.$targetLanguage.nb"
+        val translationFileName = TranslationCacheFileNames.completed(chapterFileName, targetLanguage)
         return File(bookFolder, translationFileName)
     }
 

@@ -1069,6 +1069,15 @@ private fun BookInfoOverflowAction(
                             label = stringResource(R.string.clear_cache),
                         )
                     )
+                    if (book != null && io.legado.app.help.book.supportsOrphanRecovery(book.type)
+                    ) {
+                        add(
+                            AppAction(
+                                id = "$MENU_PREFIX${BookInfoMenuAction.CacheRecovery.name}",
+                                label = stringResource(R.string.feature_orphan_recovery_book_menu),
+                            )
+                        )
+                    }
                     add(
                         AppAction(
                             id = "$MENU_PREFIX${BookInfoMenuAction.ShowLog.name}",

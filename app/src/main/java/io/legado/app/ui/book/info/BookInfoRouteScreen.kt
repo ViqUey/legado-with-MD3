@@ -24,6 +24,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.script.rhino.runScriptWithContext
 import io.legado.app.R
+import io.legado.app.domain.model.RecoveryReaderRequest
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryIntent
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryHost
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryViewModel
+import org.koin.androidx.compose.koinViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.help.book.isAudio
@@ -63,6 +68,7 @@ fun BookInfoRouteScreen(
     onOpenToc: (String) -> Unit,
     onOpenInfoEdit: (String) -> Unit,
     onOpenReader: (bookUrl: String, inBookshelf: Boolean, chapterChanged: Boolean) -> Unit = { _, _, _ -> },
+    onOpenRecoveredChapter: (RecoveryReaderRequest) -> Unit = {},
     onOpenMangaReader: (bookUrl: String, inBookshelf: Boolean, chapterChanged: Boolean) -> Unit = { _, _, _ -> },
     onOpenAudioPlay: (bookUrl: String, inBookshelf: Boolean) -> Unit = { _, _ -> },
     onOpenVideoPlayer: (bookUrl: String, inBookshelf: Boolean) -> Unit = { _, _ -> },
@@ -83,6 +89,8 @@ fun BookInfoRouteScreen(
     val activity = context as AppCompatActivity
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val recoveryModel: OrphanRecoveryViewModel = koinViewModel(key = "cache-recovery:$bookUrl")
+    val recovery by recoveryModel.uiState.collectAsStateWithLifecycle()
     val showMangaUi by rememberUpdatedState(uiState.showMangaUi)
     // 资源串在 composable 作用域内解析，避免 LocalContext.current.getString 拿到过期值
     val unlockTitle = stringResource(R.string.private_unlock_title)
@@ -166,6 +174,9 @@ fun BookInfoRouteScreen(
                     }
                 }
 
+                is BookInfoEffect.OpenCacheRecovery -> {
+                    recoveryModel.onIntent(OrphanRecoveryIntent.Open(effect.bookUrl))
+                }
                 is BookInfoEffect.OpenToc -> {
                     onOpenToc(effect.bookUrl)
                 }
@@ -270,6 +281,12 @@ fun BookInfoRouteScreen(
         sharedTransitionScope = sharedTransitionScope,
         animatedVisibilityScope = animatedVisibilityScope,
         sharedCoverKey = sharedCoverKey,
+    )
+    OrphanRecoveryHost(
+        recovery, recoveryModel::onIntent,
+        onOpenLocal = { onOpenReader(it, true, false) },
+        onOpenRecovered = onOpenRecoveredChapter,
+        onPasswordSettings = onOpenSettings,
     )
 }
 

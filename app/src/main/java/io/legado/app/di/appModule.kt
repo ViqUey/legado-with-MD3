@@ -29,6 +29,7 @@ import io.legado.app.data.repository.AppUiConfigurationRepository
 import io.legado.app.data.repository.BackupRestoreRepository
 import io.legado.app.data.repository.BackupSettingsRepository
 import io.legado.app.data.repository.BookCacheCleanupRepository
+import io.legado.app.data.repository.OrphanCacheRecoveryRepository
 import io.legado.app.data.repository.BookCacheMaintenanceRepository
 import io.legado.app.data.repository.BookCacheManageRepository
 import io.legado.app.data.repository.BookContentProcessRepository
@@ -129,6 +130,7 @@ import io.legado.app.domain.gateway.BackupRestoreGateway
 import io.legado.app.domain.gateway.BackupSettingsGateway
 import io.legado.app.domain.gateway.BookCacheCleanupGateway
 import io.legado.app.domain.gateway.BookCacheDownloadGateway
+import io.legado.app.domain.gateway.OrphanCacheRecoveryGateway
 import io.legado.app.domain.gateway.BookCacheMaintenanceGateway
 import io.legado.app.domain.gateway.BookContentProcessGateway
 import io.legado.app.domain.gateway.BookExportSettingsGateway
@@ -256,6 +258,7 @@ import io.legado.app.ui.book.audio.AudioPlayCoordinator
 import io.legado.app.ui.book.audio.AudioPlayViewModel
 import io.legado.app.ui.book.bookmark.AllBookmarkViewModel
 import io.legado.app.ui.book.cache.manage.BookCacheManageViewModel
+import io.legado.app.feature.orphanrecovery.OrphanRecoveryViewModel
 import io.legado.app.ui.book.cache.manage.CacheMaintenanceViewModel
 import io.legado.app.ui.book.changecover.ChangeCoverViewModel
 import io.legado.app.ui.book.changesource.ChangeBookSourceComposeViewModel
@@ -536,7 +539,9 @@ val appModule = module {
     single<BackupRestoreGateway> { BackupRestoreRepository() }
     single<BookCacheDownloadGateway> { CacheBookDownloadRepository(get()) }
     single<BookCacheCleanupGateway> { BookCacheCleanupRepository(get()) }
-    single<BookCacheMaintenanceGateway> { BookCacheMaintenanceRepository(get(), get()) }
+    single { BookCacheMaintenanceRepository(get(), get()) }
+    single<BookCacheMaintenanceGateway> { get<BookCacheMaintenanceRepository>() }
+    single<OrphanCacheRecoveryGateway> { OrphanCacheRecoveryRepository(get(), get(), get(), privateAccess = get()) }
     single<BookExportSettingsGateway> { BookExportSettingsRepository() }
     single<HomepageSettingsGateway> { HomepageSettingsRepository() }
     single<CoverAlbumGateway> { CoverAlbumRepository(get(), get()) }
@@ -850,6 +855,7 @@ val appModule = module {
             bookRepository = get(),
             readRecordRepository = get(),
             readerSession = get(),
+            orphanRecoveryGateway = get(),
         )
     }
     viewModelOf(::ChangeCoverViewModel)
@@ -861,6 +867,7 @@ val appModule = module {
     viewModelOf(::SearchViewModel)
     viewModelOf(::BookCacheManageViewModel)
     viewModelOf(::CacheMaintenanceViewModel)
+    viewModelOf(::OrphanRecoveryViewModel)
     viewModel {
         BookshelfManageScreenViewModel(
             application = get(),

@@ -17,6 +17,7 @@ import io.legado.app.domain.model.WordCountRecountTarget
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.isLocalTxt
 import io.legado.app.help.book.isOnLineTxt
+import io.legado.app.help.book.supportsOrphanRecovery
 import io.legado.app.model.CacheBook
 import io.legado.app.model.ReadBook
 import io.legado.app.utils.HtmlFormatter
@@ -71,6 +72,7 @@ class BookCacheMaintenanceRepository(
                 bookName = book.name,
                 entryNames = orphans.map { it.name },
                 bytes = orphans.sumOf(::lengthOf),
+                recoverySupported = book.supportsOrphanRecovery,
             )
         }
         // UiState 标了 @Stable，渲染边界不能持有可变集合实例。
@@ -372,7 +374,7 @@ class BookCacheMaintenanceRepository(
      * [legalSubjects] 由调用方批量预加载；章节表读取失败时它是空集，此时不产出任何孤儿，
      * 避免把「查不到章节列表」误判成「所有缓存都是孤儿」。
      */
-    private fun collectOrphanEntries(
+    internal fun collectOrphanEntries(
         folderName: String,
         legalSubjects: Set<String>,
     ): List<File>? {

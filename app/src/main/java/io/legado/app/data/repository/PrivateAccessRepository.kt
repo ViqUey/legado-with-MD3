@@ -4,6 +4,7 @@ import android.content.Context
 import io.legado.app.data.local.preferences.LocalPreferencesKeys
 import io.legado.app.domain.gateway.PrivateAccessGateway
 import io.legado.app.domain.model.PrivateAccessState
+import io.legado.app.domain.model.PrivateBookFacts
 import io.legado.app.domain.model.PrivateBiometricStatus
 import io.legado.app.domain.model.PrivateUnlockScope
 import io.legado.app.domain.model.PrivateUnlockTarget
@@ -216,6 +217,12 @@ class PrivateAccessRepository(
         // 读内存里的当前值而不是 flow：这个函数是同步的（AI 工具等同步路径要用）
         isEnabled = AppConfigStore.getBoolean(LocalPreferencesKeys.PRIVATE_ENABLED.name) ?: false,
     ).isTargetGranted(bookUrl, group)
+
+    override fun canOpenBookNow(bookUrl: String, facts: PrivateBookFacts): Boolean {
+        val settings = readSettings()
+        return !facts.isPrivate || !settings.enabled || !settings.verifyOnOpenBook ||
+            isGrantedNow(bookUrl, facts.groupMask)
+    }
 
     override fun revoke(target: PrivateUnlockTarget) {
         // 只有"每次验证"才需要撤销；进程级解锁时撤销没有意义

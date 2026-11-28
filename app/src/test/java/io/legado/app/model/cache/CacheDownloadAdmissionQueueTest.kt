@@ -16,9 +16,12 @@ class CacheDownloadAdmissionQueueTest {
         assertTrue(queue.shouldQueue(request, setOf("a", "b")))
 
         queue.add(request)
+        assertTrue(queue.containsBook("c"))
+        assertFalse(queue.containsBook("a"))
 
         assertNull(queue.pollReady(setOf("a", "b")))
         assertEquals(request, queue.pollReady(setOf("a")))
+        assertFalse(queue.containsBook("c"))
     }
 
     @Test

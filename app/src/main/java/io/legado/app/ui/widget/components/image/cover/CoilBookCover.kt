@@ -59,6 +59,8 @@ import androidx.core.graphics.withSave
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import io.legado.app.core.ui.morph.BookCoverMorphAnchors
+import io.legado.app.help.coil.DefaultCoverPath
+import io.legado.app.help.coil.isDefaultCoverPath
 import io.legado.app.ui.theme.LegadoTheme
 import io.legado.app.ui.theme.LocalAppUiConfiguration
 import org.koin.compose.koinInject
@@ -68,8 +70,6 @@ import io.legado.app.model.BookCover as BookCoverModel
 private const val SharedCoverRadiusCacheMaxSize = 256
 private const val CoverAspectRatioCacheMaxSize = 256
 
-/** 用户在换封面页选的“默认封面”，与空地址一样表示这本书没有真实封面。 */
-internal const val DefaultCoverPath = "use_default_cover"
 private val sharedCoverRadiusCache = mutableStateMapOf<String, Dp>()
 
 /**
@@ -91,15 +91,6 @@ private fun cacheCoverAspectRatio(path: String, aspectRatio: Float) {
         coverAspectRatioCache.keys.firstOrNull { it != path }?.let(coverAspectRatioCache::remove)
     }
 }
-
-/**
- * 这本书是否有真实封面地址可加载。
- *
- * 与 [usesDefaultBookCover] 的区别：这里只看地址本身，不读 Compose 配置，
- * 因此预热这类非组合场景也能复用同一判定。
- */
-internal fun isDefaultCoverPath(path: String?): Boolean =
-    path.isNullOrBlank() || path == DefaultCoverPath
 
 /**
  * 封面在源页面的圆角缓存读取入口：封面离开源页面（Visible→Visible 定格）时写入，

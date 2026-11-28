@@ -1,9 +1,9 @@
 package io.legado.app.ui.main.bookshelf
 
 import io.legado.app.ui.main.bookCoverSharedElementKey
-import io.legado.app.ui.widget.components.image.cover.DefaultCoverPath
+import io.legado.app.help.coil.DefaultCoverPath
 import io.legado.app.ui.widget.components.image.cover.bookshelfCoverMemoryCacheKey
-import io.legado.app.ui.widget.components.image.cover.isDefaultCoverPath
+import io.legado.app.help.coil.isDefaultCoverPath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test

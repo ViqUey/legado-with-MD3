@@ -295,7 +295,15 @@ object LocalBook {
      */
     fun importFile(uri: Uri): Book = importFiles(uri).first()
 
-    private fun importSingleFile(input: FileDoc, comicArchive: Boolean = false): Book {
+    /** A newly generated external document must never rebind a stale or existing book. */
+    internal fun importNewExport(uri: Uri, privateBook: Boolean, groupMask: Long): Book =
+        importSingleFile(FileDoc.fromUri(uri, false), newExport = privateBook to groupMask)
+
+    private fun importSingleFile(
+        input: FileDoc,
+        comicArchive: Boolean = false,
+        newExport: Pair<Boolean, Long>? = null,
+    ): Book {
         if (input.size == 0L) throw EmptyFileException("Unexpected empty File")
         val (fileName, _, _, updateTime) = input
         val bookUrl = input.toString()
@@ -305,10 +313,13 @@ object LocalBook {
             BookType.local or BookType.text
         }
         var book = appDb.bookDao.getBook(bookUrl)
+        if (newExport != null && (book != null || appDb.bookDao.hasFile(fileName))) {
+            throw java.io.IOException("Exported file conflicts with an existing local book")
+        }
         if (book == null) {
             // 源文件被删掉后重新导入同名文件时，书架里那条记录只是文件位置失效；
             // 直接 insert 会再裂出一条同名书，应先把它接回这次导入的文件。
-            val reusableBook = findReusableStaleLocalBook(bookUrl, fileName)
+            val reusableBook = if (newExport == null) findReusableStaleLocalBook(bookUrl, fileName) else null
             if (reusableBook != null) {
                 return rebindLocalBook(reusableBook, bookUrl, fileName, type.takeIf { comicArchive })
             }
@@ -319,12 +330,14 @@ object LocalBook {
                 name = nameAuthor.first,
                 author = nameAuthor.second,
                 originName = fileName,
+                isPrivate = newExport?.first ?: false,
+                group = newExport?.second ?: 0L,
                 latestChapterTime = updateTime,
                 order = appDb.bookDao.minOrder - 1
             )
             upBookInfo(book)
             book.upKind()
-            appDb.bookDao.insert(book)
+            if (newExport == null) appDb.bookDao.insert(book) else appDb.bookDao.insertNewLocalBook(book)
         } else {
             deleteBook(book, false)
             if (comicArchive) book.type = type

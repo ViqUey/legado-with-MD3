@@ -55,6 +55,12 @@ class CacheBookService : BaseService() {
         private const val MAX_IDLE_SPIN_MS = 60_000L
 
         @Volatile
+        private var activeService: CacheBookService? = null
+
+        internal fun isAdmittingForRecovery(bookUrl: String): Boolean =
+            activeService?.hasAdmissionForBook(bookUrl) == true
+
+        @Volatile
         var isRun = false
             private set
     }
@@ -109,6 +115,7 @@ class CacheBookService : BaseService() {
             cachePool.close()
         }
         cachePool = Executors.newFixedThreadPool(min(threadCount, AppConst.MAX_THREAD)).asCoroutineDispatcher()
+        activeService = this
         isRun = true
         lifecycleScope.launch(Dispatchers.IO) {
             while (currentCoroutineContext().isActive) {
@@ -188,6 +195,7 @@ class CacheBookService : BaseService() {
     }
 
     override fun onDestroy() {
+        if (activeService === this) activeService = null
         isRun = false
         if (::cachePool.isInitialized) {
             cachePool.close()
@@ -421,6 +429,10 @@ class CacheBookService : BaseService() {
                 addAll(admittingBookUrls)
             }
         }
+    }
+
+    private fun hasAdmissionForBook(bookUrl: String): Boolean = synchronized(admissionQueue) {
+        admissionQueue.containsBook(bookUrl) || synchronized(admissionLock) { bookUrl in admittingBookUrls }
     }
 
     private fun hasPendingDownloadRequests(): Boolean {
