@@ -398,12 +398,7 @@ class ReadBookViewModel(
             }
 
             override fun refreshConfigSnapshots() {
-                _uiState.update {
-                    it.copy(
-                        styleConfig = buildStyleConfig(),
-                        sheetConfig = buildSheetConfig(),
-                    )
-                }
+                rebuildReadConfigSnapshots()
             }
 
             override fun emitEffect(effect: ReadBookEffect) {
@@ -699,13 +694,17 @@ class ReadBookViewModel(
     private fun collectReadStyle() {
         viewModelScope.launch {
             readBookStyleConfigRepository.state.collect {
-                _uiState.update { state ->
-                    state.copy(
-                        styleConfig = buildStyleConfig(),
-                        sheetConfig = buildSheetConfig(),
-                    )
-                }
+                rebuildReadConfigSnapshots()
             }
+        }
+    }
+
+    private fun rebuildReadConfigSnapshots() {
+        _uiState.update {
+            it.copy(
+                styleConfig = buildStyleConfig(),
+                sheetConfig = buildSheetConfig(),
+            )
         }
     }
 
@@ -1816,12 +1815,7 @@ class ReadBookViewModel(
         }
         viewModelScope.launch {
             ReadConfigUpdateBus.events.collect { actions ->
-                _uiState.update {
-                    it.copy(
-                        styleConfig = buildStyleConfig(),
-                        sheetConfig = buildSheetConfig(),
-                    )
-                }
+                rebuildReadConfigSnapshots()
                 emitEffectWhenSubscribed(ReadBookEffect.UpdateReaderConfig(actions))
             }
         }
