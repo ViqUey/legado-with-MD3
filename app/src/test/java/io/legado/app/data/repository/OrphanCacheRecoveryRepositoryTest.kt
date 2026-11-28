@@ -3,11 +3,13 @@ package io.legado.app.data.repository
 import android.app.Application
 import android.net.Uri
 import com.sun.net.httpserver.HttpServer
+import io.legado.app.R
 import io.legado.app.constant.BookType
 import io.legado.app.data.AppDatabase
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.domain.gateway.ReadSettingsGateway
 import io.legado.app.domain.gateway.ImportBookSettingsGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
@@ -812,6 +814,61 @@ class OrphanCacheRecoveryRepositoryTest {
         assertEquals(1, catalog.unreadable)
     }
 
+    private fun expectedTxtPreface(author: String = "", intro: String = ""): String {
+        val context = RuntimeEnvironment.getApplication()
+        val title = context.getString(R.string.feature_orphan_recovery_local_name, book.name)
+        val authorLine = context.getString(R.string.author_show, author)
+        val introLine = context.getString(R.string.intro_show, "\n$intro")
+        return "$title\n$authorLine\n$introLine\n\n"
+    }
+
+    @Test fun txtExportIncludesDisplayMetadataAndBaseImporterReadsThePreface() = fixture { repo, db, _, _ ->
+        val original = book.copy(author = "作者：作者甲", intro = "原简介", customIntro = "<b>自定义简介</b><br>第二段")
+        db.bookDao.update(original)
+        val firstTitle = "第1章 第一章"
+        val secondTitle = "第2章 第二章"
+        val firstBody = "第一章正文。".repeat(240)
+        val secondBody = "第二章正文。".repeat(240)
+        flat(name(1, firstTitle), firstBody)
+        flat(name(2, secondTitle), secondBody)
+        val plan = repo.inspectExport(book.bookUrl, repo.scanBook(book.bookUrl).texts.mapIndexed { index, item ->
+            LocalRecoverySelection(item, listOf(firstTitle, secondTitle)[index], repo.preview(book.bookUrl, item).digest)
+        })
+        val chapters = "$firstTitle\n$firstBody\n\n$secondTitle\n$secondBody\n\n"
+        val directory = Files.createTempDirectory(
+            android.os.Environment.getExternalStorageDirectory().toPath(), "txt-metadata-",
+        ).toFile()
+        startImportSettings()
+        try {
+            val result = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, true) { _, _ -> }
+            val header = expectedTxtPreface("作者甲", "自定义简介\n　　第二段")
+            val exported = directory.resolve(result.fileName)
+            assertEquals(header + chapters, exported.readText())
+            assertFalse(exported.readText().contains("原简介"))
+
+            // Exercise the ordinary TXT parser with a known enabled rule and chapter spacing
+            // that meets its auto-detection threshold. This is not a custom recovery format.
+            db.txtTocRuleDao.insert(TxtTocRule(name = "test chapters", chapterRule = "^第[0-9]+章[^\\r\\n]*"))
+            val imported = checkNotNull(db.bookDao.getBook(checkNotNull(result.importedBookUrl)))
+            val toc = TextFile.getChapterList(imported)
+            assertEquals(listOf("前言", firstTitle, secondTitle), toc.map { it.title })
+            assertEquals(header, imported.intro)
+            assertTrue(TextFile.getContent(imported, toc[1]).contains(firstBody))
+            assertTrue(TextFile.getContent(imported, toc[2]).contains(secondBody))
+
+            db.bookDao.update(original.copy(customIntro = null))
+            val fallback = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals(expectedTxtPreface("作者甲", "原简介") + chapters, directory.resolve(fallback.fileName).readText())
+            db.bookDao.update(original.copy(author = "", intro = null, customIntro = null))
+            val empty = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
+            assertEquals(expectedTxtPreface() + chapters, directory.resolve(empty.fileName).readText())
+        } finally {
+            TextFile.clear()
+            stopKoin()
+            directory.deleteRecursively()
+        }
+    }
+
     @Test fun ordinaryTxtIsPublishedInChosenOrderAndKeptWhenImportDisabled() = fixture { repo, db, _, _ ->
         val a = flat("a.nb", "A & <img src=\"https://img.example/a?q=1&x=2\">")
         val b = flat("b.nb", "短")
@@ -828,7 +885,7 @@ class OrphanCacheRecoveryRepositoryTest {
             val result = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
             assertNull(result.importedBookUrl)
             assertFalse(result.importAttempted)
-            assertEquals("先 & <标题>\n短\n\n后\n${a.readText()}\n\n", directory.resolve(result.fileName).readText())
+            assertEquals(expectedTxtPreface() + "先 & <标题>\n短\n\n后\n${a.readText()}\n\n", directory.resolve(result.fileName).readText())
             assertEquals(1, db.bookDao.allBookCount)
             a.writeText("modified")
             assertEquals(RecoveryProblem.Changed, problem {
@@ -870,7 +927,7 @@ class OrphanCacheRecoveryRepositoryTest {
         try {
             val txt = repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
             assertEquals(
-                titles.zip(expectedBodies).joinToString("") { (title, body) -> "$title\n$body\n\n" },
+                expectedTxtPreface() + titles.zip(expectedBodies).joinToString("") { (title, body) -> "$title\n$body\n\n" },
                 directory.resolve(txt.fileName).readText(),
             )
             val epub = repo.export(book.bookUrl, plan, RecoveryExportFormat.Epub, directory.path, false) { _, _ -> }
@@ -1291,7 +1348,7 @@ class OrphanCacheRecoveryRepositoryTest {
             val committed = cancelAroundIoReturn {
                 repo.export(book.bookUrl, plan, RecoveryExportFormat.Txt, directory.path, false) { _, _ -> }
             }.getOrThrow()
-            assertEquals("自选标题\n必须保留\n\n", directory.resolve(committed.fileName).readText())
+            assertEquals(expectedTxtPreface() + "自选标题\n必须保留\n\n", directory.resolve(committed.fileName).readText())
         } finally { directory.deleteRecursively() }
     }
 
@@ -1349,7 +1406,7 @@ class OrphanCacheRecoveryRepositoryTest {
             assertNull(result.importedBookUrl)
             assertEquals(1, db.bookDao.allBookCount)
             val exported = directory.resolve(result.fileName)
-            assertEquals("原标题\n正文\n\n", exported.readText())
+            assertEquals(expectedTxtPreface() + "原标题\n正文\n\n", exported.readText())
             db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_recovered_book")
             assertEquals(exported.path, LocalBook.importNewExport(android.net.Uri.fromFile(exported), false, 0).bookUrl)
         } finally {

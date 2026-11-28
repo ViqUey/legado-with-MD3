@@ -388,6 +388,16 @@ class OrphanCacheRecoveryRepository internal constructor(
         try {
             when (format) {
                 RecoveryExportFormat.Txt -> temporary.bufferedWriter(Charsets.UTF_8).use { output ->
+                    check()
+                    // Match the ordinary TXT export preface; use the same metadata as recovery EPUB.
+                    output.write(name)
+                    output.write("\n")
+                    output.write(appCtx.getString(R.string.author_show, cache.book.getRealAuthor()))
+                    output.write("\n")
+                    output.write(appCtx.getString(
+                        R.string.intro_show, "\n" + HtmlFormatter.format(cache.book.getDisplayIntro()),
+                    ))
+                    output.write("\n\n")
                     plan.selections.forEachIndexed { index, selection ->
                         check()
                         val body = readSource(cache, selection.source, requireNotNull(selection.previewDigest), check)
